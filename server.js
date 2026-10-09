@@ -44,7 +44,7 @@ app.get("/", auth.requireOffice, (_req, res) => res.sendFile(pub("office.html"))
 const office = express.Router();
 office.use(auth.requireOffice);
 office.get("/all", wrap(async (_req, res) => {
-  const out = { v: await store.version(), wa: { enabled: wa.enabled() }, baseUrl: baseUrl() };
+  const out = { v: await store.version(), wa: { enabled: wa.enabled() }, baseUrl: baseUrl(), db: !!process.env.DATABASE_URL };
   for (const c of OFFICE_COLS) out[c] = await store.list(c);
   out.outbox = (await store.list("outbox")).sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 30);
   res.json(out);

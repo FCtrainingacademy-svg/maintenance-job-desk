@@ -123,7 +123,8 @@ function renderTabs(){
 function render(){
   renderTabs();
   let b="";
-  if(S.offline)b=`<div class="banner">Can't reach the server. Changes will fail until the connection is back – check your internet and reload.</div>`;
+  if(S.noDb)b+=`<div class="banner">The database isn't connected yet, so anything you enter will be lost when the server restarts. Add DATABASE_URL in Render before using it for real jobs.</div>`;
+  if(S.offline)b+=`<div class="banner">Can't reach the server. Changes will fail until the connection is back – check your internet and reload.</div>`;
   if(S.copyText)b+=`<div class="banner copybox"><div class="row"><strong>Copy this ${esc(S.copyText.label||"text")}</strong><button class="btn small" data-act="close-copy" style="margin-left:auto">Close</button></div><textarea id="copyarea" readonly>${esc(S.copyText.text)}</textarea></div>`;
   $("#banner").innerHTML=b;
   if(S.copyText){const ta=$("#copyarea");if(ta){ta.focus();ta.select()}}
@@ -803,7 +804,7 @@ function makeDb(){
     try{
       if(!force&&last!==null){const v=(await api("GET","/api/version")).v;if(v===last)return}
       const all=await api("GET","/api/all");last=all.v;
-      S.wa=all.wa;S.baseUrl=all.baseUrl;S.outbox=all.outbox||[];
+      S.wa=all.wa;S.baseUrl=all.baseUrl;S.outbox=all.outbox||[];S.noDb=all.db===false&&location.hostname!=="localhost";
       listeners.forEach(fn=>fn(all));
     }catch(e){if(S.offline)render()}
   }
