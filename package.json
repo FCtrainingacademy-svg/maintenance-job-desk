@@ -1,0 +1,23 @@
+{
+  "name": "maintenance-job-desk",
+  "version": "1.0.0",
+  "description": "Property maintenance job desk with contractor dispatch over WhatsApp",
+  "main": "server.js",
+  "directories": {
+    "lib": "lib",
+    "test": "test"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/e2e.js"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.21.2",
+    "pg": "^8.13.1"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "private": true
+}

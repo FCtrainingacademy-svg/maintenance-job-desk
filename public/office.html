@@ -1,0 +1,838 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Maintenance Job Desk</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&family=Public+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="/static/app.css">
+</head><body>
+
+<div class="wrap">
+  <header class="bar">
+    <div class="brand"><h1>Maintenance Job Desk</h1><span id="sub">Day-to-day &amp; out-of-hours property repairs</span></div>
+    <nav class="tabs" role="tablist" id="tabs"></nav>
+  </header>
+  <div id="banner"></div>
+  <main id="main"><div class="empty">Loading…</div></main>
+</div>
+<div id="toast" class="toast" hidden></div>
+
+<script>
+(function(){
+"use strict";
+const linkFor=k=>k&&k.token?`${S.baseUrl||location.origin}/c/${k.token}`:"";
+const newToken=()=>{const b=new Uint8Array(18);crypto.getRandomValues(b);return btoa(String.fromCharCode(...b)).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"")};
+const STATUSES=[["new","New"],["scheduled","Booked"],["in_progress","On site"],["awaiting_parts","Awaiting parts"],["complete","Complete"],["invoiced","Invoiced"],["paid","Paid"],["cancelled","Cancelled"]];
+const SLABEL=Object.fromEntries(STATUSES);
+const PRIORITIES=[["emergency","Emergency (out of hours)",4],["urgent","Urgent – 24 hours",24],["routine","Routine – 7 days",168],["planned","Planned / quote",336]];
+const PLABEL=Object.fromEntries(PRIORITIES.map(p=>[p[0],p[1]]));
+const CATEGORIES=["Plumbing / leak","Heating / boiler","Gas safety (CP12)","Electrical","Drainage / blockage","Roofing / gutters","Carpentry / doors / locks","Damp & mould","Decorating","Appliance","General repair","Other"];
+const ACCESS=["Tenant to let in","Key safe","Collect keys from agent","Keys held by us","Landlord to meet","Concierge / caretaker","Other"];
+const ROLES=["Letting agent","Landlord","Managing agent","Tenant","Housing association","Council","Other"];
+const OPEN=["new","scheduled","in_progress","awaiting_parts"];
+const TRACK=[["posted","Posted"],["accepted","Accepted"],["booked","Booked in"],["enroute","On the way"],["onsite","On site"],["parts","Awaiting parts"],["done","Work complete"],["signedoff","Signed off"]];
+const TLABEL=Object.fromEntries(TRACK);
+const T2STATUS={accepted:"scheduled",booked:"scheduled",enroute:"scheduled",onsite:"in_progress",parts:"awaiting_parts",done:"complete"};
+const SERVER_D=["status","allocatedTo","allocatedAt","acceptedVia","agreedPrice","contractorAttendBy","contractorFinishBy","postedAt","recipients"];
+const CONTRACTOR_KEYS=["status","scheduledAt","findings","completedAt"];
+const KPS={name:"K's Plumbing Store",web:"https://ksplumbingstore.co.uk",wa:"07488 287396"};
+const DEF_SET={bizName:"",bizAddress:"",bizPhone:"",bizEmail:"",bankName:"",sortCode:"",accountNo:"",payDays:14,vatRegistered:false,vatRate:20,labourRate:55,calloutDay:75,calloutOOH:140,markup:15,footer:"Thank you for your business."};
+
+const S={jobs:{},contacts:{},contractors:{},settings:{...DEF_SET},tab:"jobs",sel:null,draft:null,dirty:false,touched:new Set(),filter:"open",q:"",db:null,dbChecked:false,canWrite:true,
+  loaded:{jobs:false},confirmDel:false,copyText:null,cDraft:null,kDraft:null,wa:{enabled:false},outbox:[],baseUrl:"",offline:false};
+try{const t=localStorage.getItem("jd-tab");if(t)S.tab=t;}catch(e){}
+
+const $=s=>document.querySelector(s);
+const esc=v=>String(v==null?"":v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const clone=o=>JSON.parse(JSON.stringify(o||{}));
+const n=v=>{const x=parseFloat(v);return isFinite(x)?x:0};
+const gbp=v=>"£"+n(v).toLocaleString("en-GB",{minimumFractionDigits:2,maximumFractionDigits:2});
+const pad=(x,l=4)=>String(x).padStart(l,"0");
+const nowISO=()=>new Date().toISOString();
+const nowLocal=()=>{const d=new Date();d.setMinutes(d.getMinutes()-d.getTimezoneOffset());return d.toISOString().slice(0,16)};
+const addHours=(iso,h)=>{if(!iso)return"";const d=new Date(iso);if(isNaN(d))return"";d.setHours(d.getHours()+h);d.setMinutes(d.getMinutes()-d.getTimezoneOffset());return d.toISOString().slice(0,16)};
+const addDays=(dateStr,days)=>{const d=dateStr?new Date(dateStr):new Date();d.setDate(d.getDate()+days);return d.toISOString().slice(0,10)};
+const fmtDT=iso=>{if(!iso)return"—";const d=new Date(iso);if(isNaN(d))return esc(iso);return d.toLocaleString("en-GB",{weekday:"short",day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})};
+const fmtD=iso=>{if(!iso)return"—";const d=new Date(iso);if(isNaN(d))return esc(iso);return d.toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"})};
+const getPath=(o,p)=>p.split(".").reduce((a,k)=>a==null?a:a[k],o);
+const setPath=(o,p,v)=>{const ks=p.split(".");let a=o;for(let i=0;i<ks.length-1;i++){const k=ks[i];if(a[k]==null)a[k]=/^\d+$/.test(ks[i+1])?[]:{};a=a[k]}a[ks[ks.length-1]]=v};
+const area=pc=>{pc=String(pc||"").trim().toUpperCase();if(!pc)return"";const p=pc.split(/\s+/);return p.length>1?p[0]:pc.slice(0,Math.max(2,pc.length-3))};
+const intl=ph=>{let d=String(ph||"").replace(/[^\d+]/g,"");if(d.startsWith("+"))d=d.slice(1);else if(d.startsWith("00"))d=d.slice(2);else if(d.startsWith("0"))d="44"+d.slice(1);return d};
+const waLink=(ph,text)=>`https://wa.me/${intl(ph)}?text=${encodeURIComponent(text)}`;
+
+function toast(msg){const t=$("#toast");t.textContent=msg;t.hidden=false;clearTimeout(toast._t);toast._t=setTimeout(()=>t.hidden=true,2600)}
+function copy(text,label){
+  const done=()=>toast((label||"Text")+" copied");
+  const fail=()=>{S.copyText={text,label};render();};
+  try{navigator.clipboard.writeText(text).then(done,fail)}catch(e){fail()}
+}
+
+/* ---------- money ---------- */
+function calc(j){
+  const st=S.settings;const mk=j.markup!=null&&j.markup!==""?n(j.markup):n(st.markup);
+  const mats=(j.materials||[]).filter(m=>m.chargeable!==false);
+  const matCost=mats.reduce((a,m)=>a+n(m.qty)*n(m.unit),0);
+  const matCharge=matCost*(1+mk/100);
+  const labour=(j.labour||[]).reduce((a,l)=>a+n(l.hours)*n(l.rate),0);
+  const callout=n(j.callout);
+  const net=matCharge+labour+callout;
+  const vat=st.vatRegistered?net*n(st.vatRate)/100:0;
+  const sub=j.dispatch&&j.dispatch.allocatedTo?n(j.dispatch.agreedPrice):0;
+  return {mk,matCost,matCharge,labour,callout,net,vat,total:net+vat,sub,margin:net-sub-matCost};
+}
+function invLines(j){
+  const c=calc(j);const L=[];
+  if(c.callout)L.push({d:(j.priority==="emergency"?"Out-of-hours emergency call-out":"Call-out / attendance"),q:1,u:c.callout});
+  (j.labour||[]).forEach(l=>{if(n(l.hours)*n(l.rate))L.push({d:"Labour – "+(l.desc||"works"),q:n(l.hours),u:n(l.rate),unit:"hr"})});
+  (j.materials||[]).forEach(m=>{if(m.chargeable!==false&&n(m.qty)*n(m.unit))L.push({d:m.item||"Materials",q:n(m.qty),u:n(m.unit)*(1+c.mk/100)})});
+  return L;
+}
+
+/* ---------- derived ---------- */
+const jobsArr=()=>Object.values(S.jobs).sort((a,b)=>(b.reportedAt||"").localeCompare(a.reportedAt||""));
+const isLate=j=>OPEN.includes(j.status)&&j.attendBy&&new Date(j.attendBy)<new Date();
+const isOverdueInv=j=>j.status==="invoiced"&&j.invoice&&j.invoice.dueAt&&new Date(j.invoice.dueAt)<new Date(new Date().toDateString());
+function nextRef(prefix,getter){let max=0;Object.values(S.jobs).forEach(j=>{const r=getter(j);const m=r&&String(r).match(/(\d+)$/);if(m)max=Math.max(max,+m[1])});return prefix+pad(max+1)}
+function billTo(j){return j.billSame!==false?(j.issuer||{}):(j.bill||{})}
+const D=j=>j.dispatch||{};
+const kName=id=>{const k=S.contractors[id];return k?(k.name+(k.company?" ("+k.company+")":"")):"—"};
+const activeK=()=>Object.values(S.contractors).filter(k=>k.active!==false).sort((a,b)=>(a.name||"").localeCompare(b.name||""));
+const coversTrade=(k,cat)=>!cat||!(k.trades||[]).length||(k.trades||[]).includes(cat);
+function recipientsFor(j){const d=D(j);return d.sendTo==="pick"?(d.picked||[]).filter(id=>S.contractors[id]):activeK().filter(k=>coversTrade(k,j.category)).map(k=>k.id)}
+function nextStep(j){const t=j.track||{};for(const [k] of TRACK){if(k==="posted"||k==="parts")continue;if(!t[k])return k}return null}
+function mergeServer(d,c){
+  d.quotes=Object.assign({},d.quotes,c.quotes);
+  d.track=Object.assign({},d.track,c.track);
+  d.cnotes=Object.assign({},d.cnotes,c.cnotes);
+  if(c.alertLog)d.alertLog=c.alertLog;
+  if(c.dispatch){d.dispatch=Object.assign({},d.dispatch||{});SERVER_D.forEach(k=>{if(k in c.dispatch)d.dispatch[k]=c.dispatch[k]})}
+  CONTRACTOR_KEYS.forEach(k=>{if(!S.touched.has(k)&&k in c)d[k]=c[k]});
+  return d;
+}
+function timeline(j){
+  const L=(j.log||[]).map(e=>({at:e.at,who:"Office",text:e.text}));
+  Object.values(j.cnotes||{}).forEach(e=>L.push({at:e.at,who:kName(e.by).split(" (")[0],text:e.text}));
+  return L.sort((a,b)=>String(b.at).localeCompare(String(a.at)));
+}
+
+/* ---------- render ---------- */
+function renderTabs(){
+  const tabs=[["jobs","Jobs"],["contractors","Contractors"],["contacts","Contacts"],["invoices","Invoices"],["settings","Settings"]];
+  $("#tabs").innerHTML=tabs.map(([k,l])=>`<button class="tab" role="tab" data-tab="${k}" aria-selected="${S.tab===k}">${l}</button>`).join("")
+    +`<form method="post" action="/logout" style="display:inline"><button class="tab" type="submit">Log out</button></form>`;
+}
+function render(){
+  renderTabs();
+  let b="";
+  if(S.offline)b=`<div class="banner">Can't reach the server. Changes will fail until the connection is back – check your internet and reload.</div>`;
+  if(S.copyText)b+=`<div class="banner copybox"><div class="row"><strong>Copy this ${esc(S.copyText.label||"text")}</strong><button class="btn small" data-act="close-copy" style="margin-left:auto">Close</button></div><textarea id="copyarea" readonly>${esc(S.copyText.text)}</textarea></div>`;
+  $("#banner").innerHTML=b;
+  if(S.copyText){const ta=$("#copyarea");if(ta){ta.focus();ta.select()}}
+  const m=$("#main");
+  if(!S.loaded.jobs){m.innerHTML='<div class="empty">Loading…</div>';return}
+  if(S.tab==="jobs")m.innerHTML=viewJobs();
+  else if(S.tab==="contractors")m.innerHTML=viewContractors();
+  else if(S.tab==="contacts")m.innerHTML=viewContacts();
+  else if(S.tab==="invoices")m.innerHTML=viewInvoices();
+  else m.innerHTML=viewSettings();
+}
+
+function viewStrip(){
+  const all=jobsArr();
+  const open=all.filter(j=>OPEN.includes(j.status));
+  const em=open.filter(j=>j.priority==="emergency");
+  const late=open.filter(isLate);
+  const waiting=all.filter(j=>D(j).status==="open");
+  const toInv=all.filter(j=>j.status==="complete");
+  const owed=all.filter(j=>j.status==="invoiced").reduce((a,j)=>a+calc(j).total,0);
+  return `<div class="strip">
+   <button class="stat" data-filter="open"><small>Open jobs</small><b>${open.length}</b></button>
+   <button class="stat ${em.length?"alert":""}" data-filter="emergency"><small>Emergencies</small><b>${em.length}</b></button>
+   <button class="stat ${waiting.length?"alert":""}" data-filter="posted"><small>Awaiting contractor</small><b>${waiting.length}</b></button>
+   <button class="stat ${late.length?"alert":""}" data-filter="late"><small>Past attend-by</small><b>${late.length}</b></button>
+   <button class="stat" data-filter="complete"><small>Ready to invoice</small><b>${toInv.length}</b></button>
+   <button class="stat" data-filter="invoiced"><small>Unpaid</small><b>${gbp(owed)}</b></button>
+  </div>`;
+}
+function filtered(){
+  const q=S.q.trim().toLowerCase();
+  return jobsArr().filter(j=>{
+    const f=S.filter;
+    if(f==="open"&&!OPEN.includes(j.status))return false;
+    if(f==="emergency"&&!(OPEN.includes(j.status)&&j.priority==="emergency"))return false;
+    if(f==="late"&&!isLate(j))return false;
+    if(f==="posted"&&D(j).status!=="open")return false;
+    if(["complete","invoiced","paid","cancelled"].includes(f)&&j.status!==f)return false;
+    if(!q)return true;
+    const hay=[j.ref,j.property&&j.property.address,j.property&&j.property.postcode,j.description,j.category,j.issuer&&j.issuer.name,j.issuer&&j.issuer.company,(j.residents||[]).map(r=>r.name).join(" "),j.invoice&&j.invoice.number,D(j).allocatedTo&&kName(D(j).allocatedTo)].join(" ").toLowerCase();
+    return hay.includes(q);
+  });
+}
+function dispatchTag(j){
+  const d=D(j);
+  if(d.status==="open"){const qn=Object.keys(j.quotes||{}).length;return `<span class="pill d-open">${d.mode==="quote"?(qn?qn+" quote"+(qn>1?"s":""):"Quotes wanted"):"Posted"}</span>`}
+  if(d.allocatedTo)return `<span>👷 ${esc(kName(d.allocatedTo).split(" (")[0])}</span>`;
+  return "";
+}
+function viewJobs(){
+  const list=filtered();
+  const fl=[["open","Open"],["emergency","Emergency"],["posted","Awaiting contractor"],["late","Late"],["complete","To invoice"],["invoiced","Invoiced"],["paid","Paid"],["all","All"]];
+  const items=list.map(j=>{
+    const late=isLate(j);
+    return `<li class="jobitem p-${esc(j.priority)}" data-job="${esc(j.id)}" aria-current="${S.sel===j.id}" tabindex="0">
+      <div class="stripe"></div><div class="in">
+      <div class="t"><span class="mono">${esc(j.ref)}${j.example?' <span class="example">example</span>':""}</span><span>${late?'<span class="pill late">Late</span> ':""}<span class="pill s-${esc(j.status)}">${esc(SLABEL[j.status]||j.status)}</span></span></div>
+      <div class="a">${esc((j.property&&j.property.address)||"No address yet")}${j.property&&j.property.postcode?", "+esc(j.property.postcode):""}</div>
+      <div class="d">${esc(j.category||"")}${j.category&&j.description?" · ":""}${esc(j.description||"")}</div>
+      <div class="t"><span>${dispatchTag(j)||esc((j.issuer&&(j.issuer.company||j.issuer.name))||"")}</span><span>${j.scheduledAt?"Booked "+fmtDT(j.scheduledAt):"Attend by "+fmtDT(j.attendBy)}</span></div>
+      </div></li>`}).join("");
+  const loading=!S.loaded.jobs&&S.db;
+  return viewStrip()+`<div class="split ${S.sel&&S.draft?"has-sel":""}">
+   <aside class="rail">
+    <div class="rail-head">
+      <div class="row"><button class="btn primary" data-act="new-job" ${S.canWrite&&S.db?"":"disabled"}>+ New job</button><span class="hint" style="margin-left:auto">${list.length} shown</span></div>
+      <input class="search" id="q" type="search" placeholder="Search address, tenant, agent, contractor…" value="${esc(S.q)}">
+      <div class="chips">${fl.map(([k,l])=>`<button class="chip" data-filter="${k}" aria-pressed="${S.filter===k}">${l}</button>`).join("")}</div>
+    </div>
+    <ul class="joblist">${loading?'<li class="empty">Loading jobs…</li>':items||`<li class="empty">${Object.keys(S.jobs).length?"No jobs match this filter.":"No jobs logged yet.<br>Press <b>+ New job</b> when the next call comes in."}</li>`}</ul>
+   </aside>
+   <section class="sheetcol">${S.sel&&S.draft?viewSheet():`<div class="sheet"><div class="empty">Select a job to open its job sheet, or start a new one.</div></div>`}</section>
+  </div>`;
+}
+
+function opts(arr,val,blank){return (blank?`<option value="">${esc(blank)}</option>`:"")+arr.map(a=>{const[v,l]=Array.isArray(a)?a:[a,a];return `<option value="${esc(v)}" ${String(val)===String(v)?"selected":""}>${esc(l)}</option>`}).join("")}
+function fld(path,label,type,extra){
+  const v=getPath(S.draft,path);type=type||"text";
+  if(type==="textarea")return `<label class="f"><span>${label}</span><textarea data-path="${path}" ${extra||""}>${esc(v)}</textarea></label>`;
+  return `<label class="f"><span>${label}</span><input type="${type}" data-path="${path}" value="${esc(v)}" ${extra||""}></label>`;
+}
+function sel(path,label,arr,blank){return `<label class="f"><span>${label}</span><select data-path="${path}">${opts(arr,getPath(S.draft,path),blank)}</select></label>`}
+
+function stepsHTML(j){
+  const t=j.track||{},nx=nextStep(j);
+  return `<ol class="steps">${TRACK.filter(([k])=>k!=="parts"||t.parts).map(([k,l])=>`<li class="${t[k]?"done":(k===nx?"next":"")}"><b>${l}</b><small>${t[k]?fmtDT(t[k]):(k===nx?"next":"")}</small></li>`).join("")}</ol>`;
+}
+function broadcastText(j){
+  const d=D(j),p=j.property||{};
+  return [`🔧 NEW JOB ${j.ref} – ${PLABEL[j.priority]||""}`,`${j.category||"Maintenance"} · ${area(p.postcode)||"London"} area`,j.description||"",
+    `Attend by: ${fmtDT(j.attendBy)}`,
+    d.mode==="quote"?`💷 Send your price and when you can attend${d.respondBy?" by "+fmtDT(d.respondBy):""}`:`💷 Fixed fee: ${gbp(d.fee)}`,
+    "",d.mode==="quote"?`Send your quote on your personal job link.`:`First to accept gets the job – tap Accept on your personal job link,`,
+    d.mode==="quote"?"":`or reply "YES ${j.ref}".`].filter(x=>x!=null).join("\n");
+}
+function contractorJobText(j){
+  const p=j.property||{},d=D(j);
+  const L=[`✅ JOB ${j.ref} IS YOURS – ${PLABEL[j.priority]||""}`,`${j.category||""}: ${j.description||""}`,"",`📍 ${[p.address,p.postcode].filter(Boolean).join(", ")}`];
+  if(p.access)L.push(`Access: ${p.access}${p.keyInfo?" – "+p.keyInfo:""}`);
+  if(p.accessNotes)L.push(p.accessNotes);
+  if(p.parking)L.push(`Parking: ${p.parking}`);
+  (j.residents||[]).forEach(r=>{if(r.name||r.phone)L.push(`Resident: ${r.name||""} ${r.phone||""}${r.notes?" ("+r.notes+")":""}`)});
+  L.push(`Attend by: ${fmtDT(d.contractorAttendBy||j.attendBy)}`);
+  if(d.agreedPrice)L.push(`Agreed price: ${gbp(d.agreedPrice)}`);
+  const m=(j.materials||[]).filter(x=>x.item);if(m.length){L.push("","Materials:");m.forEach(x=>L.push(`• ${x.qty||1} × ${x.item} – ${x.supplier||""}`))}
+  const lk=linkFor(S.contractors[d.allocatedTo]);if(lk)L.push("",`Update progress here: ${lk}`);
+  return L.join("\n");
+}
+
+function viewDispatch(j){
+  const d=D(j),ro=!S.canWrite;
+  const ks=activeK();
+  if(!ks.length)return `<p class="hint">No contractors saved yet. Add your maintenance people in the <button class="btn small" data-tab="contractors">Contractors</button> tab, then post jobs to them from here.</p>`;
+  if(d.allocatedTo){
+    const k=S.contractors[d.allocatedTo]||{};const t=j.track||{};const nx=nextStep(j);
+    return `<div class="callout">
+      <div class="row"><span class="pill d-allocated">Allocated</span><b>${esc(kName(d.allocatedTo))}</b><span class="mono">${esc(k.phone||"")}</span>
+        <span class="hint">accepted ${fmtDT(d.allocatedAt)} via ${esc({app:"job board",whatsapp:"WhatsApp / phone",quote:"quote"}[d.acceptedVia]||d.acceptedVia||"—")}</span></div>
+      <div class="g">
+        <div><span class="hint">Agreed price</span><br><b class="num">${d.agreedPrice!==""&&d.agreedPrice!=null?gbp(d.agreedPrice):"—"}</b></div>
+        <div><span class="hint">Contractor will attend</span><br><b>${fmtDT(d.contractorAttendBy)}</b></div>
+        <div><span class="hint">Expected finish</span><br><b>${fmtDT(d.contractorFinishBy)}</b></div>
+        <div><span class="hint">Your attend-by</span><br><b>${fmtDT(j.attendBy)}</b></div>
+      </div>
+      ${stepsHTML(j)}
+      <div class="row">
+        ${k.phone?`<a class="btn small wa" href="${esc(waLink(k.phone,contractorJobText(j)))}" target="_blank" rel="noopener">Send job details on WhatsApp</a>`:""}
+        ${nx&&nx!=="signedoff"&&!ro?`<button class="btn small" data-act="o-step" data-step="${nx}">Mark “${TLABEL[nx]}” for them</button>`:""}
+        ${t.done&&!t.signedoff&&!ro?`<button class="btn small go" data-act="o-step" data-step="signedoff">Sign off work</button>`:""}
+        ${!t.done&&!ro?`<button class="btn small danger" data-act="o-reopen">Take back &amp; repost</button>`:""}
+      </div></div>`;
+  }
+  if(d.status==="open"){
+    const rec=(d.recipients||[]).map(id=>S.contractors[id]).filter(Boolean);
+    const qs=Object.entries(j.quotes||{});
+    return `<div class="callout">
+      <div class="row"><span class="pill d-open">Posted ${fmtDT(d.postedAt)}</span><span>${d.mode==="quote"?"Asking for quotes":"Fixed fee "+gbp(d.fee)+" · first to accept gets it"}</span>
+        <span class="hint">sent to ${rec.length} contractor${rec.length===1?"":"s"}</span></div>
+      ${qs.length?`<div class="tablewrap"><table class="grid"><thead><tr><th>Contractor</th><th class="r">Price</th><th>Can attend</th><th>Finish by</th><th>Note</th><th></th></tr></thead><tbody>${qs.sort((a,b)=>n(a[1].price)-n(b[1].price)).map(([id,q])=>`<tr><td>${esc(kName(id))}</td><td class="r num"><b>${gbp(q.price)}</b></td><td>${fmtDT(q.attendBy)}</td><td>${fmtDT(q.finishBy)}</td><td>${esc(q.note||"")}</td><td><button class="btn small go" data-act="o-pick" data-k="${esc(id)}" ${ro?"disabled":""}>Allocate</button></td></tr>`).join("")}</tbody></table></div>`:(d.mode==="quote"?'<p class="hint">No quotes in yet. They appear here as contractors send them.</p>':'<p class="hint">Waiting for a contractor to accept on the job board.</p>')}
+      <div><b style="font-size:13px">${S.wa&&S.wa.enabled?"Chase by hand on WhatsApp":"Alert by hand on WhatsApp (automatic alerts not connected yet)"}</b> <button class="btn small" data-act="copy-broadcast">Copy group message</button> <button class="btn small" data-act="o-resend">Resend alerts</button></div>
+      <div class="row">${rec.map(k=>k.phone?`<a class="btn small wa" href="${esc(waLink(k.phone,broadcastText(j)))}" target="_blank" rel="noopener">${esc(k.name)}</a>`:`<span class="hint">${esc(k.name)} (no number)</span>`).join("")}</div>
+      <div class="row" style="border-top:1px solid var(--line);padding-top:8px">
+        <span class="hint">Accepted by WhatsApp or phone?</span>
+        <select id="manualK" style="width:auto">${opts(ks.map(k=>[k.id,k.name+(k.company?" – "+k.company:"")]),"","Choose contractor…")}</select>
+        <input id="manualPrice" type="number" step="0.01" placeholder="Agreed £" style="width:110px" value="${d.mode==="flat"?esc(d.fee):""}">
+        <button class="btn small go" data-act="o-manual" ${ro?"disabled":""}>Allocate</button>
+        <button class="btn small danger" data-act="o-withdraw" style="margin-left:auto" ${ro?"disabled":""}>Withdraw post</button>
+      </div></div>`;
+  }
+  const mode=d.mode||"flat",sendTo=d.sendTo||"all",picked=d.picked||[];
+  const matchN=ks.filter(k=>coversTrade(k,j.category)).length;
+  return `<div class="g2">
+     <div class="callout"><b style="font-size:13px">How will they be paid?</b>
+       <div class="choice"><label><input type="radio" name="dmode" data-path="dispatch.mode" value="flat" ${mode==="flat"?"checked":""}> Fixed fee – first to accept</label><label><input type="radio" name="dmode" data-path="dispatch.mode" value="quote" ${mode==="quote"?"checked":""}> Ask for quotes – I choose</label></div>
+       ${mode==="flat"?`<label class="f"><span>Fee you'll pay the contractor £</span><input type="number" step="0.01" min="0" data-path="dispatch.fee" value="${esc(d.fee)}"></label>`
+         :`<label class="f"><span>Quotes needed by</span><input type="datetime-local" data-path="dispatch.respondBy" value="${esc(d.respondBy)}"></label>`}
+       <p class="hint">${mode==="flat"?"Best for emergencies and known jobs (call-out, unblock, service). The first contractor to tap Accept gets it.":"Best for bigger or unclear work. Each contractor sends a price, attend time and finish time; you pick one."}</p></div>
+     <div class="callout"><b style="font-size:13px">Send to</b>
+       <div class="choice"><label><input type="radio" name="dsend" data-path="dispatch.sendTo" value="all" ${sendTo==="all"?"checked":""}> All matching (${matchN})</label><label><input type="radio" name="dsend" data-path="dispatch.sendTo" value="pick" ${sendTo==="pick"?"checked":""}> Choose people</label></div>
+       ${sendTo==="pick"?`<div class="picklist">${ks.map(k=>`<label class="${coversTrade(k,j.category)?"match":""}"><input type="checkbox" data-pick="${esc(k.id)}" ${picked.includes(k.id)?"checked":""}><span><b>${esc(k.name)}</b><br><span class="hint">${esc((k.trades||[]).slice(0,3).join(", ")||"All trades")}${k.areas?" · "+esc(k.areas):""}</span></span></label>`).join("")}</div>`
+        :`<p class="hint">Every active contractor who covers ${esc(j.category||"this kind of work")}${j.category?"":" (set a category to narrow it)"}.</p>`}
+     </div></div>
+   <div class="row"><button class="btn primary big" data-act="o-post" ${ro?"disabled":""}>Post job to contractors</button><span class="hint">Each contractor gets a WhatsApp alert with Accept / Not for me buttons, and it appears on their job link.</span></div>`;
+}
+
+function alertsHTML(j){
+  const al=j.alerts||{},resN=(j.residents||[]).filter(r=>r.phone).length,iss=j.issuer||{};
+  const log=(j.alertLog||[]).slice().reverse().slice(0,6).map(e=>`<li><time>${fmtDT(e.at)}</time><span>${esc(e.msg)} <span class="hint">→ ${e.to.map(t=>esc((t.name||t.kind)+(t.ok?(t.simulated?" (not sent – WhatsApp not set up)":" ✓"):" ✕ "+(t.error||""))) ).join(", ")}</span></span></li>`).join("");
+  return `<div class="callout">
+    <div class="row"><b style="font-size:13px">WhatsApp updates while they wait</b><span class="hint">sent automatically when the contractor is booked, on the way, needs parts and finishes</span></div>
+    <div class="row">
+      <label class="row" style="gap:6px"><input type="checkbox" data-path="alerts.residents" ${al.residents!==false?"checked":""}> Residents (${resN} with a number)</label>
+      <label class="row" style="gap:6px"><input type="checkbox" data-path="alerts.issuer" ${al.issuer?"checked":""}> ${esc(iss.role||"Agent / landlord")}${iss.name?" – "+esc(iss.name):""}${iss.phone?"":" (no number)"}</label>
+    </div>
+    <div class="row"><input id="customAlert" placeholder="Send your own update, e.g. Engineer running 30 minutes late" style="flex:1;min-width:220px"><button class="btn small" data-act="o-alert">Send update</button></div>
+    ${log?`<ul class="log">${log}</ul>`:""}
+  </div>`;
+}
+function viewSheet(){
+  const j=S.draft;const c=calc(j);const ro=!S.canWrite;
+  const contactOpts=Object.values(S.contacts).sort((a,b)=>(a.name||"").localeCompare(b.name||"")).map(k=>[k.id,(k.name||"")+(k.company?" – "+k.company:"")+(k.role?" ("+k.role+")":"")]);
+  const res=(j.residents||[]).map((r,i)=>`<tr>
+     <td><input data-path="residents.${i}.name" value="${esc(r.name)}" placeholder="Full name"></td>
+     <td><input data-path="residents.${i}.phone" value="${esc(r.phone)}" placeholder="07…" inputmode="tel"></td>
+     <td><input data-path="residents.${i}.notes" value="${esc(r.notes)}" placeholder="e.g. works nights, has dog"></td>
+     <td><button class="btn small danger" data-act="del-row" data-list="residents" data-i="${i}" aria-label="Remove resident">✕</button></td></tr>`).join("");
+  const mats=(j.materials||[]).map((m,i)=>`<tr>
+     <td><input data-path="materials.${i}.item" value="${esc(m.item)}" placeholder="e.g. 15mm compression elbow"></td>
+     <td style="width:70px"><input data-path="materials.${i}.qty" type="number" min="0" step="any" value="${esc(m.qty)}"></td>
+     <td style="width:100px"><input data-path="materials.${i}.unit" type="number" min="0" step="0.01" value="${esc(m.unit)}" placeholder="0.00"></td>
+     <td style="width:160px"><input data-path="materials.${i}.supplier" value="${esc(m.supplier)}" list="suppliers"></td>
+     <td style="width:120px"><select data-path="materials.${i}.state">${opts([["need","To order"],["ordered","Ordered"],["have","On van / collected"],["used","Fitted"]],m.state||"need")}</select></td>
+     <td class="r num" style="width:80px">${gbp(n(m.qty)*n(m.unit))}</td>
+     <td style="width:40px"><button class="btn small danger" data-act="del-row" data-list="materials" data-i="${i}" aria-label="Remove material">✕</button></td></tr>`).join("");
+  const lab=(j.labour||[]).map((l,i)=>`<tr>
+     <td><input data-path="labour.${i}.desc" value="${esc(l.desc)}" placeholder="e.g. Replace kitchen tap"></td>
+     <td style="width:80px"><input data-path="labour.${i}.hours" type="number" min="0" step="0.25" value="${esc(l.hours)}"></td>
+     <td style="width:100px"><input data-path="labour.${i}.rate" type="number" min="0" step="0.01" value="${esc(l.rate)}"></td>
+     <td class="r num" style="width:90px">${gbp(n(l.hours)*n(l.rate))}</td>
+     <td style="width:40px"><button class="btn small danger" data-act="del-row" data-list="labour" data-i="${i}" aria-label="Remove labour line">✕</button></td></tr>`).join("");
+  const log=timeline(j).map(e=>`<li><time>${fmtDT(e.at)}</time><span><span class="who">${esc(e.who)}:</span> ${esc(e.text)}</span></li>`).join("");
+  const kpsCount=(j.materials||[]).filter(m=>/k'?s plumbing/i.test(m.supplier||"")&&(m.state||"need")==="need").length;
+  const inv=j.invoice||{};const late=isLate(j);
+  const bt=billTo(j);
+  return `<article class="sheet">
+   <div class="sheet-top">
+     <button class="btn small back" data-act="back">← Jobs</button>
+     <span class="ref">${esc(j.ref)}</span>
+     <span class="pill p-${esc(j.priority)}">${esc(PLABEL[j.priority]||"")}</span>
+     ${late?'<span class="pill late">Past attend-by</span>':""}
+     ${j.example?'<span class="example">example job</span>':""}
+     <span class="grow"></span>
+     <label class="f" style="min-width:160px"><span>Status</span><select data-path="status">${opts(STATUSES,j.status)}</select></label>
+   </div>
+   <div class="savebar ${S.dirty?"dirty":""}" id="savebar">
+     <span class="note">${S.dirty?"Unsaved changes":(j.updatedAt?"Saved "+fmtDT(j.updatedAt):"Not saved yet")}</span>
+     <button class="btn" data-act="copy-sheet">Copy job text</button>
+     <button class="btn" data-act="dl-sheet">Download job sheet</button>
+     <button class="btn primary" data-act="save" ${ro?"disabled":""}>Save job</button>
+   </div>
+
+   <section class="sec">
+     <div class="sec-h"><span class="n">1</span><h3>Job</h3></div>
+     <div class="g">
+       ${sel("priority","Priority",PRIORITIES.map(p=>[p[0],p[1]]))}
+       ${sel("category","Trade / category",CATEGORIES,"Choose…")}
+       ${fld("engineer","Engineer (if your own staff)")}
+       ${fld("issuer.ref","Client order / PO no.")}
+     </div>
+     ${fld("description","What's the job? (as reported)","textarea",'placeholder="e.g. Leak under kitchen sink, water coming through ceiling of flat below"')}
+   </section>
+
+   <section class="sec dispatch">
+     <div class="sec-h"><span class="n">2</span><h3>Contractor &amp; tracking</h3></div>
+     ${viewDispatch(j)}
+     ${alertsHTML(j)}
+   </section>
+
+   <section class="sec">
+     <div class="sec-h"><span class="n">3</span><h3>Timeframe</h3><span class="hint">Attend-by fills from priority: emergency 4 h, urgent 24 h, routine 7 days</span></div>
+     <div class="g">
+       ${fld("reportedAt","Reported","datetime-local")}
+       ${fld("attendBy","Attend by","datetime-local")}
+       ${fld("scheduledAt","Booked for","datetime-local")}
+       ${fld("completedAt","Completed","datetime-local")}
+     </div>
+   </section>
+
+   <section class="sec">
+     <div class="sec-h"><span class="n">4</span><h3>Property &amp; access</h3></div>
+     <div class="g2">${fld("property.address","Address")}<div class="g">${fld("property.postcode","Postcode")}${fld("property.type","Property type",null,'list="ptypes" placeholder="Flat, house, HMO…"')}</div></div>
+     <div class="g">
+       ${sel("property.access","Access",ACCESS,"Choose…")}
+       ${fld("property.keyInfo","Key safe code / key ref")}
+       ${fld("property.parking","Parking")}
+       ${fld("property.stopcock","Stopcock / meter location")}
+     </div>
+     ${fld("property.accessNotes","Access notes","textarea",'placeholder="e.g. Flat 3 on 2nd floor, buzz twice, no access before 9am"')}
+     <p class="hint">Contractors only see the postcode area and job description until the job is theirs.</p>
+   </section>
+
+   <section class="sec">
+     <div class="sec-h"><span class="n">5</span><h3>Residents on site</h3><div class="act"><button class="btn small" data-act="add-row" data-list="residents">+ Resident</button></div></div>
+     ${res?`<div class="tablewrap"><table class="lines"><thead><tr><th>Name</th><th>Contact number</th><th>Notes</th><th></th></tr></thead><tbody>${res}</tbody></table></div>`:'<p class="hint">No residents added. Add the tenant(s) who will be at the property.</p>'}
+   </section>
+
+   <section class="sec">
+     <div class="sec-h"><span class="n">6</span><h3>Issued by</h3><div class="act"><select id="pickIssuer" aria-label="Fill from contacts" style="width:auto">${opts(contactOpts,"","Fill from contacts…")}</select>${j.issuer&&j.issuer.contactId?"":`<button class="btn small" data-act="save-contact" data-from="issuer">Save as contact</button>`}</div></div>
+     <div class="g">
+       ${fld("issuer.name","Name")}
+       ${sel("issuer.role","Role",ROLES,"Choose…")}
+       ${fld("issuer.company","Company / agency")}
+       ${fld("issuer.phone","Contact number","tel")}
+       ${fld("issuer.email","Email","email")}
+     </div>
+   </section>
+
+   <section class="sec">
+     <div class="sec-h"><span class="n">7</span><h3>Invoice to</h3>
+       <label class="row" style="gap:6px;font-weight:600"><input type="checkbox" id="billSame" ${j.billSame!==false?"checked":""}> Same as issued by</label>
+       ${j.billSame===false?`<div class="act"><select id="pickBill" aria-label="Fill from contacts" style="width:auto">${opts(contactOpts,"","Fill from contacts…")}</select></div>`:""}</div>
+     ${j.billSame===false?`<div class="g">${fld("bill.name","Name")}${sel("bill.role","Role",ROLES,"Choose…")}${fld("bill.company","Company")}${fld("bill.phone","Contact number","tel")}${fld("bill.email","Email","email")}</div>${fld("bill.address","Billing address","textarea",'style="min-height:50px"')}`
+       :`<p class="hint">Invoice goes to ${esc(bt.name||"the person issuing the job")}${bt.company?" at "+esc(bt.company):""}. Untick to bill the landlord or another party.</p>`}
+   </section>
+
+   <section class="sec">
+     <div class="sec-h"><span class="n">8</span><h3>Materials needed</h3><div class="act"><button class="btn small" data-act="add-row" data-list="materials">+ Material</button></div></div>
+     <div class="kps"><strong>${KPS.name}</strong><span>Preferred supplier · WhatsApp <span class="mono">${KPS.wa}</span></span>
+       <a class="btn small" href="${KPS.web}" target="_blank" rel="noopener">Open shop</a>
+       <button class="btn small" data-act="copy-order" ${kpsCount?"":"disabled"}>Copy order (${kpsCount} to order)</button></div>
+     ${mats?`<div class="tablewrap"><table class="lines"><thead><tr><th>Item</th><th>Qty</th><th>Unit cost £</th><th>Supplier</th><th>Status</th><th class="r">Cost</th><th></th></tr></thead><tbody>${mats}</tbody></table></div>`:'<p class="hint">No materials yet. List what the engineer needs; each line defaults to K\'s Plumbing Store.</p>'}
+   </section>
+
+   <section class="sec">
+     <div class="sec-h"><span class="n">9</span><h3>Charges to client</h3><div class="act"><button class="btn small" data-act="add-row" data-list="labour">+ Labour</button></div></div>
+     <div class="g">
+       <label class="f"><span>Call-out charge £</span><input type="number" min="0" step="0.01" data-path="callout" value="${esc(j.callout)}"></label>
+       <label class="f"><span>Materials markup %</span><input type="number" min="0" step="1" data-path="markup" value="${esc(j.markup)}" placeholder="${esc(S.settings.markup)} (default)"></label>
+     </div>
+     ${lab?`<div class="tablewrap"><table class="lines"><thead><tr><th>Work done</th><th>Hours</th><th>Rate £/hr</th><th class="r">Line</th><th></th></tr></thead><tbody>${lab}</tbody></table></div>`:""}
+     <div class="totals" id="totals">${totalsHTML(c)}</div>
+   </section>
+
+   <section class="sec">
+     <div class="sec-h"><span class="n">10</span><h3>Work log</h3></div>
+     <div class="row"><input id="lognote" placeholder="e.g. Tenant not home, card left. Rebooked for Thursday." style="flex:1;min-width:200px"><button class="btn" data-act="add-log">Add note</button></div>
+     ${log?`<ul class="log">${log}</ul>`:'<p class="hint">Status changes, contractor updates and notes are recorded here with the time.</p>'}
+     ${fld("findings","Report / work carried out","textarea",'placeholder="Shown on the invoice under the job description"')}
+   </section>
+
+   <section class="sec">
+     <div class="sec-h"><span class="n">11</span><h3>Invoice</h3>
+       <div class="act">
+       ${inv.number?`<span class="pill s-${esc(j.status)}">${esc(inv.number)}</span>
+          <button class="btn small" data-act="dl-invoice">Download invoice</button>
+          <button class="btn small" data-act="copy-invmail">Copy email</button>
+          ${j.status!=="paid"?`<button class="btn small" data-act="mark-paid">Mark paid</button>`:""}`
+         :`<button class="btn small primary" data-act="issue" ${ro||!c.total?"disabled":""}>Issue invoice</button>`}
+       </div></div>
+     ${inv.number?`<p class="hint">Issued ${fmtD(inv.issuedAt)} · due ${fmtD(inv.dueAt)}${j.paidAt?" · paid "+fmtD(j.paidAt):""} · to ${esc(bt.company||bt.name||"—")}${bt.email?" ("+esc(bt.email)+")":""}</p>${invoicePreview(j)}`
+       :`<p class="hint">${c.total?"Issuing gives this job the next invoice number, sets payment due in "+esc(S.settings.payDays)+" days and moves it to Invoiced.":"Add a call-out, labour or materials to raise an invoice."}</p>`}
+   </section>
+
+   <section class="sec">
+     <div class="row">${S.confirmDel?`<span>Delete ${esc(j.ref)} permanently?</span><button class="btn danger" data-act="del-job-yes">Yes, delete</button><button class="btn" data-act="del-job-no">Keep it</button>`:`<button class="btn small danger" data-act="del-job" ${ro?"disabled":""}>Delete job</button>`}</div>
+   </section>
+  </article>
+  <datalist id="suppliers"><option value="${KPS.name}"></option><option value="Own stock (van)"></option><option value="Other merchant"></option></datalist>
+  <datalist id="ptypes"><option value="Flat"></option><option value="House"></option><option value="Maisonette"></option><option value="HMO"></option><option value="Commercial unit"></option></datalist>`;
+}
+function totalsHTML(c){
+  return `<span>Materials (cost ${gbp(c.matCost)} + ${c.mk}%)</span><span>${gbp(c.matCharge)}</span>
+   <span>Labour</span><span>${gbp(c.labour)}</span>
+   <span>Call-out</span><span>${gbp(c.callout)}</span>
+   ${S.settings.vatRegistered?`<span>Net</span><span>${gbp(c.net)}</span><span>VAT ${esc(S.settings.vatRate)}%</span><span>${gbp(c.vat)}</span>`:""}
+   <span class="big">Client total</span><span class="big">${gbp(c.total)}</span>
+   ${c.sub?`<span class="m">Less contractor</span><span class="m">−${gbp(c.sub)}</span><span class="m">Less materials cost</span><span class="m">−${gbp(c.matCost)}</span><span><b>Your margin</b></span><span><b>${gbp(c.margin)}</b></span>`:""}`;
+}
+
+/* ---------- invoice / job sheet documents ---------- */
+function bizBlock(){const s=S.settings;return [s.bizName||"Your business name (set in Settings)",s.bizAddress,s.bizPhone,s.bizEmail].filter(Boolean)}
+function invoicePreview(j){
+  const c=calc(j);const bt=billTo(j);const s=S.settings;const inv=j.invoice||{};
+  const rows=invLines(j).map(l=>`<tr><td>${esc(l.d)}</td><td class="r num">${l.q}${l.unit?" "+l.unit:""}</td><td class="r num">${gbp(l.u)}</td><td class="r num">${gbp(l.q*l.u)}</td></tr>`).join("");
+  return `<div class="inv"><div class="inv-top"><div><h4>Invoice ${esc(inv.number||"")}</h4><div class="hint">${bizBlock().map(esc).join("<br>")}</div></div>
+   <div class="hint" style="text-align:right">Date ${fmtD(inv.issuedAt)}<br>Due ${fmtD(inv.dueAt)}<br>Job ${esc(j.ref)}${j.issuer&&j.issuer.ref?"<br>Your ref "+esc(j.issuer.ref):""}</div></div>
+   <div><strong>Bill to</strong><br>${[bt.name,bt.company,bt.address].filter(Boolean).map(esc).join("<br>")}</div>
+   <div><strong>Property</strong><br>${esc([j.property&&j.property.address,j.property&&j.property.postcode].filter(Boolean).join(", "))}</div>
+   <div class="tablewrap"><table class="grid"><thead><tr><th>Description</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">Amount</th></tr></thead><tbody>${rows}</tbody></table></div>
+   <div class="totals">${s.vatRegistered?`<span>Net</span><span>${gbp(c.net)}</span><span>VAT ${esc(s.vatRate)}%</span><span>${gbp(c.vat)}</span>`:""}<span class="big">Total due</span><span class="big">${gbp(c.total)}</span></div>
+   ${s.bankName||s.accountNo?`<div class="hint">Pay by bank transfer: ${esc(s.bankName)} · sort code ${esc(s.sortCode)} · account ${esc(s.accountNo)} · reference ${esc(inv.number)}</div>`:'<div class="hint">Add your bank details in Settings so they print on the invoice.</div>'}
+  </div>`;
+}
+const DOC_CSS=`body{font:13px/1.45 Arial,Helvetica,sans-serif;color:#111;max-width:780px;margin:24px auto;padding:0 20px}h1{font-size:22px;margin:0 0 4px}h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;border-bottom:2px solid #111;padding-bottom:3px;margin:18px 0 8px}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:5px 6px;border-bottom:1px solid #ccc;vertical-align:top}th{font-size:11px;text-transform:uppercase;color:#555}.r{text-align:right}.top{display:flex;justify-content:space-between;gap:20px}.muted{color:#555}.box{border:1px solid #999;padding:8px 10px;min-height:60px}.tot td{border:0}.big{font-size:16px;font-weight:bold}.sig{display:flex;gap:20px;margin-top:20px}.sig div{flex:1;border-top:1px solid #111;padding-top:4px;font-size:11px;color:#555}@media print{body{margin:0}}`;
+function docWrap(title,body){return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${esc(title)}</title><style>${DOC_CSS}</style></head><body>${body}</body></html>`}
+function kv(rows){return `<table>${rows.filter(r=>r[1]).map(r=>`<tr><th style="width:34%">${esc(r[0])}</th><td>${esc(r[1])}</td></tr>`).join("")}</table>`}
+function jobSheetDoc(j){
+  const p=j.property||{},i=j.issuer||{},d=D(j);
+  const res=(j.residents||[]).map(r=>`<tr><td>${esc(r.name)}</td><td>${esc(r.phone)}</td><td>${esc(r.notes)}</td></tr>`).join("");
+  const mats=(j.materials||[]).map(m=>`<tr><td>${esc(m.item)}</td><td class="r">${esc(m.qty)}</td><td>${esc(m.supplier)}</td><td>${esc({need:"To order",ordered:"Ordered",have:"On van",used:"Fitted"}[m.state||"need"])}</td></tr>`).join("");
+  const body=`<div class="top"><div><h1>Job sheet ${esc(j.ref)}</h1><div class="muted">${bizBlock().map(esc).join(" · ")}</div></div><div class="r"><b>${esc(PLABEL[j.priority]||"")}</b><br>${esc(SLABEL[j.status]||"")}</div></div>
+   <h2>Job</h2>${kv([["Category",j.category],["Description",j.description],["Contractor",d.allocatedTo?kName(d.allocatedTo):j.engineer],["Client order / PO",i.ref]])}
+   <h2>Timeframe</h2>${kv([["Reported",fmtDT(j.reportedAt)],["Attend by",fmtDT(d.contractorAttendBy||j.attendBy)],["Booked for",j.scheduledAt?fmtDT(j.scheduledAt):""],["Expected finish",d.contractorFinishBy?fmtDT(d.contractorFinishBy):""]])}
+   <h2>Property &amp; access</h2>${kv([["Address",[p.address,p.postcode].filter(Boolean).join(", ")],["Property type",p.type],["Access",p.access],["Key safe / key ref",p.keyInfo],["Access notes",p.accessNotes],["Parking",p.parking],["Stopcock / meters",p.stopcock]])}
+   <h2>Residents</h2>${res?`<table><tr><th>Name</th><th>Number</th><th>Notes</th></tr>${res}</table>`:'<p class="muted">None recorded</p>'}
+   <h2>Issued by</h2>${kv([["Name",i.name],["Role",i.role],["Company",i.company],["Number",i.phone],["Email",i.email]])}
+   <h2>Materials</h2>${mats?`<table><tr><th>Item</th><th class="r">Qty</th><th>Supplier</th><th>Status</th></tr>${mats}</table>`:'<p class="muted">None listed</p>'}
+   <h2>Work carried out</h2><div class="box">${esc(j.findings||"")}</div>
+   <div class="sig"><div>Engineer signature &amp; date</div><div>Resident signature &amp; date</div></div>`;
+  return docWrap("Job sheet "+j.ref,body);
+}
+function invoiceDoc(j){
+  const c=calc(j),bt=billTo(j),s=S.settings,inv=j.invoice||{},p=j.property||{};
+  const rows=invLines(j).map(l=>`<tr><td>${esc(l.d)}</td><td class="r">${l.q}${l.unit?" "+l.unit:""}</td><td class="r">${gbp(l.u)}</td><td class="r">${gbp(l.q*l.u)}</td></tr>`).join("");
+  const body=`<div class="top"><div><h1>${esc(s.bizName||"Invoice")}</h1><div class="muted">${[s.bizAddress,s.bizPhone,s.bizEmail].filter(Boolean).map(esc).join("<br>")}</div></div>
+   <div class="r"><h1>INVOICE</h1><b>${esc(inv.number)}</b><br>Date: ${fmtD(inv.issuedAt)}<br>Due: ${fmtD(inv.dueAt)}<br>Job: ${esc(j.ref)}${j.issuer&&j.issuer.ref?"<br>Your ref: "+esc(j.issuer.ref):""}</div></div>
+   <h2>Bill to</h2><div>${[bt.name,bt.company,bt.address,bt.email].filter(Boolean).map(esc).join("<br>")}</div>
+   <h2>Property &amp; works</h2><div><b>${esc([p.address,p.postcode].filter(Boolean).join(", "))}</b><br>${esc(j.description||"")}${j.findings?"<br><br>"+esc(j.findings):""}${j.completedAt?"<br><span class='muted'>Completed "+fmtD(j.completedAt)+"</span>":""}</div>
+   <h2>Charges</h2><table><tr><th>Description</th><th class="r">Qty</th><th class="r">Unit price</th><th class="r">Amount</th></tr>${rows}</table>
+   <table class="tot" style="width:auto;margin-left:auto;margin-top:8px">${s.vatRegistered?`<tr><td>Net</td><td class="r">${gbp(c.net)}</td></tr><tr><td>VAT ${esc(s.vatRate)}%</td><td class="r">${gbp(c.vat)}</td></tr>`:""}<tr><td class="big">Total due</td><td class="r big">${gbp(c.total)}</td></tr></table>
+   <h2>Payment</h2><div>${s.bankName||s.accountNo?`Bank transfer to ${esc(s.bankName)}<br>Sort code ${esc(s.sortCode)} · Account ${esc(s.accountNo)}<br>Reference: <b>${esc(inv.number)}</b><br>`:""}Payment due within ${esc(s.payDays)} days.${s.vatRegistered?"":"<br><span class='muted'>Not VAT registered.</span>"}</div>
+   <p class="muted" style="margin-top:24px">${esc(s.footer||"")}</p>`;
+  return docWrap("Invoice "+inv.number,body);
+}
+function jobSheetText(j){
+  const p=j.property||{},i=j.issuer||{};
+  const L=[`JOB ${j.ref} – ${PLABEL[j.priority]||""}`,`${j.category||""}: ${j.description||""}`,"",`📍 ${[p.address,p.postcode].filter(Boolean).join(", ")}`];
+  if(p.access)L.push(`Access: ${p.access}${p.keyInfo?" – "+p.keyInfo:""}`);
+  if(p.accessNotes)L.push(p.accessNotes);
+  if(p.parking)L.push(`Parking: ${p.parking}`);
+  (j.residents||[]).forEach(r=>L.push(`Resident: ${r.name||""} ${r.phone||""}${r.notes?" ("+r.notes+")":""}`));
+  L.push(`Attend by: ${fmtDT(j.attendBy)}${j.scheduledAt?" · Booked "+fmtDT(j.scheduledAt):""}`);
+  if(i.name)L.push(`Issued by: ${i.name}${i.company?" ("+i.company+")":""} ${i.phone||""}`);
+  const m=(j.materials||[]).filter(x=>x.item);
+  if(m.length){L.push("","Materials:");m.forEach(x=>L.push(`• ${x.qty||1} × ${x.item} – ${x.supplier||""}`))}
+  return L.join("\n");
+}
+function kpsOrderText(j){
+  const m=(j.materials||[]).filter(x=>/k'?s plumbing/i.test(x.supplier||"")&&(x.state||"need")==="need"&&x.item);
+  return [`Order for job ${j.ref}`,`Deliver/collect for: ${[j.property&&j.property.address,j.property&&j.property.postcode].filter(Boolean).join(", ")}`,"",...m.map(x=>`${x.qty||1} × ${x.item}`),"",`Needed by: ${fmtDT(j.scheduledAt||j.attendBy)}`].join("\n");
+}
+function invoiceEmail(j){
+  const bt=billTo(j),c=calc(j),inv=j.invoice||{},p=j.property||{};
+  return `Subject: Invoice ${inv.number} – ${[p.address,p.postcode].filter(Boolean).join(", ")}\n\nHi ${bt.name||""},\n\nPlease find attached invoice ${inv.number} for ${j.description||"works"} at ${[p.address,p.postcode].filter(Boolean).join(", ")}${j.issuer&&j.issuer.ref?" (your ref "+j.issuer.ref+")":""}.\n\nAmount due: ${gbp(c.total)}, payable by ${fmtD(inv.dueAt)}.${S.settings.accountNo?`\nBank: ${S.settings.bankName}, sort code ${S.settings.sortCode}, account ${S.settings.accountNo}, reference ${inv.number}.`:""}\n\nMany thanks,\n${S.settings.bizName||""}`;
+}
+function saveFile(name,html){
+  const url=URL.createObjectURL(new Blob([html],{type:"text/html"}));
+  const a=document.createElement("a");a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),5000);toast("Downloaded "+name+" – open it to print or save as PDF");
+}
+
+/* ---------- contractors (office) ---------- */
+function inviteText(k){const s=S.settings;return `Hi ${(k.name||"").split(" ")[0]}, you've been added to the ${s.bizName?s.bizName+" ":""}maintenance job board.\n\nYour personal job link (save it, no login needed):\n${linkFor(k)}\n\nWhen a job comes up you'll get a WhatsApp message here with Accept and Not for me buttons. First to accept gets the job. Use the link to set your attend time, send quotes and update progress: on the way, on site, complete.\n\nPlease reply OK to confirm you're happy to receive job alerts on this number.`}
+function viewContractors(){
+  const list=Object.values(S.contractors).sort((a,b)=>(a.active===false)-(b.active===false)||(a.name||"").localeCompare(b.name||""));
+  const stats=id=>{const js=Object.values(S.jobs).filter(j=>D(j).allocatedTo===id);return {live:js.filter(j=>!(j.track||{}).done).length,done:js.filter(j=>(j.track||{}).done).length}};
+  const rows=list.map(k=>{const s=stats(k.id);return `<tr class="click" data-kontr="${esc(k.id)}"><td><b>${esc(k.name)}</b>${k.example?' <span class="example">example</span>':""}<br><span class="hint">${esc(k.company||"")}</span></td><td>${esc((k.trades||[]).join(", ")||"All trades")}<br><span class="hint">${esc(k.areas||"")}</span></td><td class="mono">${esc(k.phone||"")}</td><td>${k.active===false?'<span class="pill">Paused</span>':'<span class="pill d-allocated">Active</span>'}</td><td class="r num">${s.live} / ${s.done}</td></tr>`}).join("");
+  const d=S.kDraft;
+  const txt=(k,l,t)=>`<label class="f"><span>${l}</span><input type="${t||"text"}" data-kpath="${k}" value="${esc(d[k])}"></label>`;
+  const form=d?`<div class="panel"><div class="panel-h"><h2>${S.contractors[d.id]?"Edit contractor":"New contractor"}</h2></div><div class="panel-b">
+     <div class="g">${txt("name","Contact name")}${txt("company","Company name")}</div>
+     <div class="g">${txt("phone","Mobile (WhatsApp)","tel")}${txt("email","Email","email")}</div>
+     <label class="f"><span>Address</span><textarea data-kpath="address" style="min-height:56px">${esc(d.address)}</textarea></label>
+     <div><span class="hint" style="text-transform:uppercase;font-weight:600;letter-spacing:.05em">Trades covered</span><div class="picklist" style="margin-top:4px">${CATEGORIES.map(c=>`<label><input type="checkbox" data-ktrade="${esc(c)}" ${(d.trades||[]).includes(c)?"checked":""}> ${esc(c)}</label>`).join("")}</div><span class="hint">Leave all unticked if they do everything.</span></div>
+     <div class="g">${txt("areas","Areas covered (postcodes)")}${txt("gasSafe","Gas Safe reg. no.")}</div>
+     <div class="g">${txt("rate","Usual hourly rate £","number")}${txt("callout","Usual call-out £","number")}${txt("insurance","Insurance expiry","date")}</div>
+     <label class="f"><span>Notes</span><textarea data-kpath="notes" style="min-height:56px">${esc(d.notes)}</textarea></label>
+     <label class="row" style="gap:6px;font-weight:600"><input type="checkbox" data-kpath="active" ${d.active!==false?"checked":""}> Active – receives new jobs</label>
+     <div class="callout"><span class="hint" style="text-transform:uppercase;font-weight:600;letter-spacing:.05em">Personal job link – no login needed</span>
+       <div class="mono" style="word-break:break-all;font-size:12px">${esc(linkFor(d))}</div>
+       <div class="row"><button class="btn small" data-act="k-copylink">Copy link</button><button class="btn small" data-act="k-copyinvite">Copy invite</button>${d.phone?`<a class="btn small wa" href="${esc(waLink(d.phone,inviteText(d)))}" target="_blank" rel="noopener">Send invite on WhatsApp</a>`:""}${S.contractors[d.id]?`<button class="btn small danger" data-act="k-rotate">Replace link</button>`:""}</div>
+       <span class="hint">Anyone with this link can act as ${esc(d.name||"this contractor")}. If it's shared by mistake, press Replace link and send the new one. Pausing the contractor also stops the link working.</span></div>
+     <div class="row"><button class="btn primary" data-act="k-save" ${S.canWrite?"":"disabled"}>Save contractor</button><button class="btn" data-act="k-cancel">Cancel</button>${S.contractors[d.id]?`<button class="btn danger" data-act="k-del" style="margin-left:auto">Delete</button>`:""}</div>
+   </div></div>`:`<div class="panel"><div class="panel-b"><p class="hint">Your maintenance people and companies. When you post a job, the ones who cover that trade are alerted, and the first to accept gets it.</p><button class="btn primary" data-act="k-new" ${S.canWrite&&S.db?"":"disabled"}>+ New contractor</button></div></div>`;
+  return `<div class="two"><div class="panel"><div class="panel-h"><h2>Contractors</h2><span class="hint">${list.filter(k=>k.active!==false).length} active</span></div>
+    <div class="tablewrap">${rows?`<table class="grid"><thead><tr><th>Name</th><th>Trades / areas</th><th>Mobile</th><th>Status</th><th class="r">Live / done</th></tr></thead><tbody>${rows}</tbody></table>`:'<div class="empty">No contractors yet. Add the people and firms you send work to.</div>'}</div></div>${form}</div>`;
+}
+
+/* ---------- contacts ---------- */
+function viewContacts(){
+  const list=Object.values(S.contacts).sort((a,b)=>(a.name||"").localeCompare(b.name||""));
+  const count=id=>Object.values(S.jobs).filter(j=>(j.issuer&&j.issuer.contactId===id)||(j.bill&&j.bill.contactId===id)).length;
+  const rows=list.map(k=>`<tr class="click" data-contact="${esc(k.id)}"><td><b>${esc(k.name)}</b>${k.example?' <span class="example">example</span>':""}<br><span class="hint">${esc(k.company||"")}</span></td><td>${esc(k.role||"")}</td><td class="mono">${esc(k.phone||"")}</td><td>${esc(k.email||"")}</td><td class="r num">${count(k.id)}</td></tr>`).join("");
+  const d=S.cDraft;
+  const form=d?`<div class="panel"><div class="panel-h"><h2>${d.id&&S.contacts[d.id]?"Edit contact":"New contact"}</h2></div><div class="panel-b">
+     ${["name:Name","company:Company / agency","phone:Contact number","email:Email"].map(x=>{const[k,l]=x.split(":");return `<label class="f"><span>${l}</span><input data-cpath="${k}" value="${esc(d[k])}"></label>`}).join("")}
+     <label class="f"><span>Role</span><select data-cpath="role">${opts(ROLES,d.role,"Choose…")}</select></label>
+     <label class="f"><span>Billing address</span><textarea data-cpath="address" style="min-height:60px">${esc(d.address)}</textarea></label>
+     <label class="f"><span>Notes</span><textarea data-cpath="notes" style="min-height:60px">${esc(d.notes)}</textarea></label>
+     <div class="row"><button class="btn primary" data-act="c-save" ${S.canWrite?"":"disabled"}>Save contact</button><button class="btn" data-act="c-cancel">Cancel</button>${d.id&&S.contacts[d.id]?`<button class="btn danger" data-act="c-del" style="margin-left:auto">Delete</button>`:""}</div>
+   </div></div>`:`<div class="panel"><div class="panel-b"><p class="hint">Agents, landlords and managing agents who send you work. Pick them on a job sheet to fill in "Issued by" and "Invoice to".</p><button class="btn primary" data-act="c-new" ${S.canWrite&&S.db?"":"disabled"}>+ New contact</button></div></div>`;
+  return `<div class="two"><div class="panel"><div class="panel-h"><h2>Clients &amp; agents</h2><span class="hint">${list.length} saved</span></div>
+    <div class="tablewrap">${rows?`<table class="grid"><thead><tr><th>Name</th><th>Role</th><th>Number</th><th>Email</th><th class="r">Jobs</th></tr></thead><tbody>${rows}</tbody></table>`:'<div class="empty">No contacts yet. Add the agents and landlords who send you work.</div>'}</div></div>${form}</div>`;
+}
+
+/* ---------- invoices ---------- */
+function viewInvoices(){
+  const inv=jobsArr().filter(j=>j.invoice&&j.invoice.number).sort((a,b)=>(b.invoice.number).localeCompare(a.invoice.number));
+  const toInv=jobsArr().filter(j=>j.status==="complete");
+  const unpaid=inv.filter(j=>j.status==="invoiced"),overdue=unpaid.filter(isOverdueInv);
+  const sum=a=>a.reduce((x,j)=>x+calc(j).total,0);
+  const rows=inv.map(j=>{const bt=billTo(j);const od=isOverdueInv(j);return `<tr class="click" data-openjob="${esc(j.id)}"><td class="mono">${esc(j.invoice.number)}</td><td>${esc(bt.company||bt.name||"—")}<br><span class="hint">${esc((j.property&&j.property.address)||"")}</span></td><td>${fmtD(j.invoice.issuedAt)}</td><td>${fmtD(j.invoice.dueAt)}</td><td>${od?'<span class="pill late">Overdue</span>':`<span class="pill s-${esc(j.status)}">${esc(SLABEL[j.status])}</span>`}</td><td class="r num">${gbp(calc(j).total)}</td></tr>`}).join("");
+  const ready=toInv.map(j=>`<tr class="click" data-openjob="${esc(j.id)}"><td class="mono">${esc(j.ref)}</td><td>${esc((j.property&&j.property.address)||"")}</td><td>${esc((billTo(j).company||billTo(j).name)||"—")}</td><td>${(j.track||{}).signedoff?"Signed off":(j.track||{}).done?'<span class="pill d-open">Needs sign-off</span>':""}</td><td class="r num">${gbp(calc(j).total)}</td></tr>`).join("");
+  return `<div class="strip" style="grid-template-columns:repeat(4,minmax(0,1fr))">
+     <div class="stat"><small>Ready to invoice</small><b>${toInv.length}</b></div>
+     <div class="stat"><small>Unpaid</small><b>${gbp(sum(unpaid))}</b></div>
+     <div class="stat ${overdue.length?"alert":""}"><small>Overdue · ${overdue.length}</small><b>${gbp(sum(overdue))}</b></div>
+     <div class="stat"><small>Paid to date</small><b>${gbp(sum(inv.filter(j=>j.status==="paid")))}</b></div></div>
+   <div style="display:grid;gap:16px">
+   ${ready?`<div class="panel"><div class="panel-h"><h2>Completed, not yet invoiced</h2></div><div class="tablewrap"><table class="grid"><thead><tr><th>Job</th><th>Property</th><th>Bill to</th><th>Contractor work</th><th class="r">Value</th></tr></thead><tbody>${ready}</tbody></table></div></div>`:""}
+   <div class="panel"><div class="panel-h"><h2>Invoices</h2><span class="hint">Open one to download, copy the email, or mark it paid</span></div>
+   <div class="tablewrap">${rows?`<table class="grid"><thead><tr><th>No.</th><th>Bill to</th><th>Issued</th><th>Due</th><th>Status</th><th class="r">Total</th></tr></thead><tbody>${rows}</tbody></table>`:'<div class="empty">No invoices issued yet. Complete a job, then press <b>Issue invoice</b> on its job sheet.</div>'}</div></div></div>`;
+}
+
+/* ---------- settings ---------- */
+function viewSettings(){
+  const s=S.settings;
+  const f=(k,l,t,ex)=>`<label class="f"><span>${l}</span><input type="${t||"text"}" data-spath="${k}" value="${esc(s[k])}" ${ex||""}></label>`;
+  return `<div class="panel" style="max-width:860px"><div class="panel-h"><h2>Business &amp; invoice settings</h2><span class="hint">Printed on job sheets and invoices</span></div>
+  <div class="panel-b">
+   <div class="g2">${f("bizName","Trading name")}${f("bizPhone","Office phone (shown to contractors)","tel")}${f("bizEmail","Email","email")}</div>
+   <label class="f"><span>Business address</span><textarea data-spath="bizAddress" style="min-height:60px">${esc(s.bizAddress)}</textarea></label>
+   <div class="g">${f("bankName","Bank / account name")}${f("sortCode","Sort code")}${f("accountNo","Account number")}${f("payDays","Payment terms (days)","number",'min="0"')}</div>
+   <div class="g">${f("calloutDay","Day call-out £","number",'step="0.01"')}${f("calloutOOH","Out-of-hours call-out £","number",'step="0.01"')}${f("labourRate","Labour rate £/hr","number",'step="0.01"')}${f("markup","Materials markup %","number")}</div>
+   <div class="row"><label class="row" style="gap:6px;font-weight:600"><input type="checkbox" data-spath="vatRegistered" ${s.vatRegistered?"checked":""}> VAT registered</label>${s.vatRegistered?`<label class="f" style="width:120px"><span>VAT %</span><input type="number" data-spath="vatRate" value="${esc(s.vatRate)}"></label>`:""}</div>
+   ${f("footer","Invoice footer")}
+   <div class="row"><button class="btn primary" data-act="s-save" ${S.canWrite&&S.db?"":"disabled"}>Save settings</button><span class="hint">New jobs pick up the call-out and labour rate from here.</span></div>
+  </div></div>
+  <div class="panel" style="max-width:860px;margin-top:16px"><div class="panel-h"><h2>WhatsApp messages</h2>
+    ${S.wa&&S.wa.enabled?'<span class="pill d-allocated">Connected</span>':'<span class="pill d-open">Not connected – messages are logged, not sent</span>'}</div>
+  <div class="panel-b">
+    ${(S.outbox||[]).length?`<ul class="log">${S.outbox.map(o=>`<li><time>${fmtDT(o.at)}</time><span><span class="mono">+${esc(o.to)}</span> ${esc(o.summary||"")} ${o.error?`<span class="pill late">${esc(o.error)}</span>`:o.simulated?'<span class="pill">not sent</span>':'<span class="pill d-allocated">sent</span>'}</span></li>`).join("")}</ul>`:'<p class="hint">Job alerts, contractor replies and customer updates will be listed here.</p>'}
+  </div></div>`;
+}
+
+/* ---------- actions ---------- */
+async function write(path,data){
+  if(!S.db){toast("Saving isn't available here");return false}
+  try{await S.db.doc(path).set(data);return true}
+  catch(e){return writeErr(e)}
+}
+function writeErr(e){toast((e&&e.message)||"Couldn't save – check your connection and try again");return false}
+async function notify(path,body,what){
+  try{const r=await S.db.api("POST",path,body||{});
+    const res=r.results||r.sent||[];if(!res.length){toast(what+": nobody to message");return r}
+    const bad=res.filter(x=>!x.ok);
+    if(r.simulated)toast(`WhatsApp isn't connected yet – ${what} logged in Settings. Use the WhatsApp buttons for now.`);
+    else toast(bad.length?`${what}: ${res.length-bad.length} sent, ${bad.length} failed (${bad[0].error||"error"})`:`${what}: sent to ${res.length} on WhatsApp`);
+    return r}catch(e){toast(what+" failed: "+((e&&e.message)||"server error"))}
+}
+async function upd(id,obj){if(!S.db)return false;try{await S.db.doc("jobs/"+id).update(obj);return true}catch(e){return writeErr(e)}}
+function selectJob(id){
+  if(S.dirty&&S.sel&&S.sel!==id){toast("Save or discard changes first");return}
+  S.sel=id;S.draft=clone(S.jobs[id]);S.dirty=false;S.touched=new Set();S.confirmDel=false;render();
+  if(window.innerWidth<920)window.scrollTo(0,0);
+}
+function markDirty(key){S.dirty=true;if(key)S.touched.add(key.split(".")[0]);const sb=$("#savebar");if(sb){sb.classList.add("dirty");sb.querySelector(".note").textContent="Unsaved changes"}}
+function logEntry(text){S.draft.log=(S.draft.log||[]).concat([{at:nowISO(),text}])}
+
+async function saveJob(){
+  const j=S.draft;j.updatedAt=nowISO();
+  let out=clone(j);
+  try{const cur=await S.db.doc("jobs/"+j.id).get();if(cur.exists)out=mergeServer(out,cur.data())}catch(e){}
+  const ok=await write("jobs/"+j.id,out);
+  if(ok){S.draft=clone(out);S.jobs[j.id]=clone(out);S.dirty=false;S.touched=new Set();toast(j.ref+" saved");render()}
+  return ok;
+}
+async function officeUpdate(obj,logText){
+  // write dispatch/tracking changes straight to the server, keep draft in step
+  const j=S.draft;if(logText){logEntry(logText);obj.log=S.draft.log}
+  if(await upd(j.id,obj)){
+    const deep=(a,b)=>{for(const k in b){if(b[k]&&typeof b[k]==="object"&&!Array.isArray(b[k])){a[k]=a[k]&&typeof a[k]==="object"?a[k]:{};deep(a[k],b[k])}else a[k]=b[k]}};
+    deep(S.draft,obj);if(S.jobs[j.id])deep(S.jobs[j.id],clone(obj));render();return true}
+  return false;
+}
+
+document.addEventListener("click",async ev=>{
+  const t=ev.target.closest("[data-tab],[data-filter],[data-job],[data-act],[data-contact],[data-kontr],[data-openjob]");if(!t)return;
+  if(t.dataset.tab){S.tab=t.dataset.tab;try{localStorage.setItem("jd-tab",S.tab)}catch(e){}render();return}
+  if(t.dataset.filter){S.filter=t.dataset.filter;if(S.tab!=="jobs")S.tab="jobs";render();return}
+  if(t.dataset.job&&!t.dataset.act){selectJob(t.dataset.job);return}
+  if(t.dataset.openjob){S.tab="jobs";S.filter="all";selectJob(t.dataset.openjob);return}
+  if(t.dataset.contact){S.cDraft=clone(S.contacts[t.dataset.contact]);render();return}
+  if(t.dataset.kontr){S.kDraft=clone(S.contractors[t.dataset.kontr]);render();return}
+  const a=t.dataset.act,j=S.draft;
+  switch(a){
+    case "close-copy":S.copyText=null;render();break;
+    case "back":if(S.dirty){toast("Save or discard changes first");break}S.sel=null;S.draft=null;render();break;
+    case "new-job":{
+      if(S.dirty){toast("Save or discard changes first");break}
+      const ref=S.db.collection("jobs").doc();const now=nowLocal();
+      const job={id:ref.id,ref:nextRef("PM-",x=>x.ref),status:"new",priority:"routine",category:"",description:"",reportedAt:now,attendBy:addHours(now,168),
+        property:{},residents:[{name:"",phone:""}],issuer:{},billSame:true,materials:[],labour:[{desc:"",hours:1,rate:S.settings.labourRate}],callout:S.settings.calloutDay,
+        dispatch:{mode:"flat",sendTo:"all",fee:""},log:[{at:nowISO(),text:"Job logged"}],createdAt:nowISO()};
+      S.jobs[job.id]=job;S.sel=job.id;S.draft=clone(job);S.dirty=true;S.touched=new Set();S.filter="open";render();
+      const first=document.querySelector('[data-path="description"]');if(first)first.focus();break}
+    case "save":saveJob();break;
+    case "add-row":{const L=t.dataset.list;j[L]=j[L]||[];
+      j[L].push(L==="materials"?{item:"",qty:1,unit:"",supplier:KPS.name,state:"need"}:L==="labour"?{desc:"",hours:1,rate:S.settings.labourRate}:{name:"",phone:""});
+      markDirty(L);render();const rows=document.querySelectorAll(`[data-path^="${L}.${j[L].length-1}."]`);if(rows[0])rows[0].focus();break}
+    case "del-row":j[t.dataset.list].splice(+t.dataset.i,1);markDirty(t.dataset.list);render();break;
+    case "add-log":{const i=$("#lognote");if(!i.value.trim())break;logEntry(i.value.trim());markDirty("log");render();break}
+    case "copy-sheet":copy(jobSheetText(j),"job text");break;
+    case "copy-order":copy(kpsOrderText(j),"K's Plumbing Store order");break;
+    case "copy-broadcast":copy(broadcastText(j),"WhatsApp group message");break;
+    case "dl-sheet":saveFile(j.ref+" job sheet.html",jobSheetDoc(j));break;
+    case "dl-invoice":saveFile((j.invoice.number||"invoice")+".html",invoiceDoc(j));break;
+    case "copy-invmail":copy(invoiceEmail(j),"invoice email");break;
+    case "issue":{
+      const today=new Date().toISOString().slice(0,10);
+      j.invoice={number:nextRef("INV-",x=>x.invoice&&x.invoice.number),issuedAt:today,dueAt:addDays(today,n(S.settings.payDays))};
+      if(j.status!=="paid")j.status="invoiced";S.touched.add("status");if(!j.completedAt)j.completedAt=nowLocal();
+      logEntry("Invoice "+j.invoice.number+" issued for "+gbp(calc(j).total));await saveJob();break}
+    case "mark-paid":j.status="paid";S.touched.add("status");j.paidAt=new Date().toISOString().slice(0,10);logEntry("Marked paid");await saveJob();break;
+    case "del-job":S.confirmDel=true;render();break;
+    case "del-job-no":S.confirmDel=false;render();break;
+    case "del-job-yes":{const id=j.id;try{await S.db.doc("jobs/"+id).delete()}catch(e){}delete S.jobs[id];S.sel=null;S.draft=null;S.dirty=false;S.confirmDel=false;toast("Job deleted");render();break}
+    case "save-contact":{const src=j[t.dataset.from]||{};if(!src.name){toast("Add a name first");break}
+      const ref=S.db.collection("contacts").doc();const c={id:ref.id,name:src.name||"",role:src.role||"",company:src.company||"",phone:src.phone||"",email:src.email||"",address:src.address||""};
+      if(await write("contacts/"+c.id,c)){src.contactId=c.id;markDirty("issuer");toast("Contact saved");render()}break}
+
+    /* dispatch – office */
+    case "o-post":{
+      const d=Object.assign({mode:"flat",sendTo:"all"},j.dispatch);
+      if(d.mode==="flat"&&!n(d.fee)){toast("Enter the fee you'll pay");break}
+      j.dispatch=d;const rec=recipientsFor(j);
+      if(!rec.length){toast(d.sendTo==="pick"?"Tick at least one contractor":"No active contractors cover this trade – choose people instead");break}
+      if(!j.description){toast("Describe the job first");break}
+      if(!(j.property&&j.property.address)){toast("Add the property address first – the contractor gets it when they accept");break}
+      const now=nowISO();
+      j.dispatch=Object.assign(d,{status:"open",postedAt:now,recipients:rec,allocatedTo:"",agreedPrice:""});
+      j.track={posted:now};j.quotes={};
+      logEntry(`Posted to ${rec.length} contractor${rec.length>1?"s":""} – ${d.mode==="quote"?"quotes wanted":"fixed fee "+gbp(d.fee)}`);
+      S.touched.add("dispatch");
+      const ok=await (async()=>{const out=clone(j);out.updatedAt=now;if(await write("jobs/"+j.id,out)){S.jobs[j.id]=clone(out);S.dirty=false;S.touched=new Set();return true}return false})();
+      if(ok){render();await notify(`/api/jobs/${j.id}/notify-post`,{},"Job alert");S.db.refresh()}break}
+    case "o-resend":await notify(`/api/jobs/${j.id}/notify-post`,{},"Job alert");break;
+    case "o-withdraw":await officeUpdate({dispatch:{status:"withdrawn"}},"Post withdrawn");break;
+    case "o-pick":{const kid=t.dataset.k,q=(j.quotes||{})[kid]||{},now=nowISO();
+      if(await officeUpdate({dispatch:{status:"allocated",allocatedTo:kid,allocatedAt:now,acceptedVia:"quote",agreedPrice:n(q.price),contractorAttendBy:q.attendBy||"",contractorFinishBy:q.finishBy||""},track:{accepted:now},status:"scheduled",scheduledAt:q.attendBy||j.scheduledAt||""},`Allocated to ${kName(kid)} at ${gbp(q.price)}`))
+        await notify(`/api/jobs/${j.id}/notify-assigned`,{},"Contractor told");break}
+    case "o-manual":{const kid=$("#manualK").value;if(!kid){toast("Choose the contractor who accepted");break}const pr=$("#manualPrice").value,now=nowISO();
+      if(await officeUpdate({dispatch:{status:"allocated",allocatedTo:kid,allocatedAt:now,acceptedVia:"whatsapp",agreedPrice:pr===""?"":n(pr)},track:{accepted:now},status:"scheduled"},`Allocated to ${kName(kid)} (accepted by WhatsApp/phone)`))
+        await notify(`/api/jobs/${j.id}/notify-assigned`,{},"Contractor told");break}
+    case "o-step":{const st=t.dataset.step,now=nowISO();const o={track:{[st]:now}};if(T2STATUS[st])o.status=T2STATUS[st];if(st==="done"&&!j.completedAt)o.completedAt=nowLocal();if(st==="signedoff")o.status="complete";
+      if(await officeUpdate(o,(st==="signedoff"?"Work signed off":"Marked “"+TLABEL[st]+"” for contractor"))&&["enroute","parts","done","signedoff"].includes(st))
+        await notify(`/api/jobs/${j.id}/alert`,{event:st},"Customer update");break}
+    case "o-alert":{const txt=$("#customAlert").value.trim();if(!txt){toast("Write the update first");break}
+      if(S.dirty){toast("Save the job first so the right people get it");break}
+      const r=await notify(`/api/jobs/${j.id}/alert`,{event:"custom",text:txt},"Update");if(r)$("#customAlert").value="";S.db.refresh();break}
+    case "o-reopen":{const now=nowISO();await officeUpdate({dispatch:{status:"open",allocatedTo:"",agreedPrice:"",contractorAttendBy:"",contractorFinishBy:"",postedAt:now},track:{accepted:"",booked:"",enroute:"",onsite:"",parts:""},status:"new"},`Taken back from ${kName(D(j).allocatedTo)} and reposted`);break}
+
+    /* contractors (office) */
+    case "k-new":S.kDraft={id:S.db.collection("contractors").doc().id,token:newToken(),active:true,trades:[]};render();break;
+    case "k-copylink":copy(linkFor(S.kDraft),"job link");break;
+    case "k-rotate":{try{const r=await S.db.api("POST",`/api/contractors/${S.kDraft.id}/rotate`);S.kDraft.token=r.token;if(S.contractors[S.kDraft.id])S.contractors[S.kDraft.id].token=r.token;toast("New link made – the old one no longer works");render()}catch(e){writeErr(e)}break}
+    case "k-cancel":S.kDraft=null;render();break;
+    case "k-save":{const d=S.kDraft;if(!d.name||!d.phone){toast("Add a name and mobile number");break}if(await write("contractors/"+d.id,d)){toast("Contractor saved");S.kDraft=null;render()}break}
+    case "k-del":{try{await S.db.doc("contractors/"+S.kDraft.id).delete()}catch(e){}S.kDraft=null;toast("Contractor deleted");render();break}
+    case "k-copyinvite":copy(inviteText(S.kDraft),"invite");break;
+
+    case "c-new":S.cDraft={id:S.db.collection("contacts").doc().id};render();break;
+    case "c-cancel":S.cDraft=null;render();break;
+    case "c-save":{const d=S.cDraft;if(!d.name){toast("Add a name");break}if(await write("contacts/"+d.id,d)){toast("Contact saved");S.cDraft=null;render()}break}
+    case "c-del":{try{await S.db.doc("contacts/"+S.cDraft.id).delete()}catch(e){}S.cDraft=null;toast("Contact deleted");render();break}
+    case "s-save":{const ok=await write("settings/business",S.settings);if(ok)toast("Settings saved");break}
+  }
+});
+document.addEventListener("keydown",ev=>{if(ev.key==="Enter"){const t=ev.target.closest("[data-job]");if(t&&!t.dataset.act)selectJob(t.dataset.job);if(ev.target.id==="lognote"){ev.preventDefault();document.querySelector('[data-act="add-log"]').click()}if(ev.target.id==="customAlert")document.querySelector('[data-act="o-alert"]').click()}});
+
+function onField(ev){
+  const el=ev.target;
+  if(el.id==="q"){S.q=el.value;const pos=el.selectionStart;render();const q=$("#q");q.focus();try{q.setSelectionRange(pos,pos)}catch(e){}return}
+  if(el.dataset.cpath&&S.cDraft){S.cDraft[el.dataset.cpath]=el.value;return}
+  if(el.dataset.kpath&&S.kDraft){S.kDraft[el.dataset.kpath]=el.type==="checkbox"?el.checked:el.value;if(el.dataset.kpath==="phone")return;return}
+  if(el.dataset.ktrade&&S.kDraft){const s=new Set(S.kDraft.trades||[]);el.checked?s.add(el.dataset.ktrade):s.delete(el.dataset.ktrade);S.kDraft.trades=[...s];return}
+  if(el.dataset.spath){const k=el.dataset.spath;S.settings[k]=el.type==="checkbox"?el.checked:(el.type==="number"?n(el.value):el.value);if(el.type==="checkbox")render();return}
+  if(el.dataset.pick&&S.draft){const d=S.draft.dispatch=S.draft.dispatch||{};const s=new Set(d.picked||[]);el.checked?s.add(el.dataset.pick):s.delete(el.dataset.pick);d.picked=[...s];markDirty("dispatch");return}
+  if(!el.dataset.path||!S.draft)return;
+  const p=el.dataset.path,old=getPath(S.draft,p);
+  setPath(S.draft,p,el.type==="checkbox"?el.checked:el.value);markDirty(p);
+  if(p==="dispatch.mode"||p==="dispatch.sendTo"){render();return}
+  if(p==="status"&&old!==el.value){logEntry("Status: "+(SLABEL[old]||old)+" → "+SLABEL[el.value]);if(el.value==="complete"&&!S.draft.completedAt)S.draft.completedAt=nowLocal();render();return}
+  if(p==="priority"){const pr=PRIORITIES.find(x=>x[0]===el.value);S.draft.attendBy=addHours(S.draft.reportedAt||nowLocal(),pr[2]);
+    if(el.value==="emergency"&&n(S.draft.callout)===n(S.settings.calloutDay))S.draft.callout=S.settings.calloutOOH;
+    if(el.value!=="emergency"&&n(S.draft.callout)===n(S.settings.calloutOOH))S.draft.callout=S.settings.calloutDay;
+    logEntry("Priority set to "+PLABEL[el.value]);render();return}
+  if(p==="category"){render();return}
+  if(/^(materials|labour)\.\d+\.(qty|unit|hours|rate)$/.test(p)||p==="callout"||p==="markup"){
+    const row=el.closest("tr");if(row){const i=+p.split(".")[1];const L=p.split(".")[0];const x=S.draft[L][i];const cell=row.querySelector("td.r");if(cell)cell.textContent=gbp(L==="materials"?n(x.qty)*n(x.unit):n(x.hours)*n(x.rate))}
+    const tt=$("#totals");if(tt)tt.innerHTML=totalsHTML(calc(S.draft));}
+}
+document.addEventListener("input",ev=>{if(ev.target.tagName!=="SELECT"&&ev.target.type!=="checkbox"&&ev.target.type!=="radio")onField(ev)});
+document.addEventListener("change",ev=>{
+  const el=ev.target;
+  if(el.id==="pickIssuer"||el.id==="pickBill"){const k=S.contacts[el.value];if(!k)return;const key=el.id==="pickIssuer"?"issuer":"bill";
+    S.draft[key]=Object.assign({},S.draft[key],{contactId:k.id,name:k.name||"",role:k.role||"",company:k.company||"",phone:k.phone||"",email:k.email||"",address:k.address||""});markDirty(key);render();return}
+  if(el.id==="billSame"){S.draft.billSame=el.checked;if(!el.checked&&!S.draft.bill)S.draft.bill={};markDirty("billSame");render();return}
+  if(el.id==="manualK"||el.id==="manualPrice")return;
+  if(el.tagName==="SELECT"||el.type==="checkbox"||el.type==="radio")onField(ev);
+});
+window.addEventListener("beforeunload",e=>{if(S.dirty){e.preventDefault();e.returnValue=""}});
+
+/* ---------- server connection ---------- */
+function makeDb(){
+  let last=null,timer=null;const listeners=[];
+  async function api(method,url,body){
+    let r;try{r=await fetch(url,{method,headers:body?{"Content-Type":"application/json"}:{},body:body?JSON.stringify(body):undefined,credentials:"same-origin"})}
+    catch(e){S.offline=true;throw {message:"Can't reach the server"}}
+    if(S.offline){S.offline=false}
+    if(r.status===401){location.href="/login";throw {message:"Please log in again"}}
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok)throw {message:j.error||("Server error "+r.status)};
+    return j;
+  }
+  async function pull(force){
+    try{
+      if(!force&&last!==null){const v=(await api("GET","/api/version")).v;if(v===last)return}
+      const all=await api("GET","/api/all");last=all.v;
+      S.wa=all.wa;S.baseUrl=all.baseUrl;S.outbox=all.outbox||[];
+      listeners.forEach(fn=>fn(all));
+    }catch(e){if(S.offline)render()}
+  }
+  const rid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,10);
+  const docRef=(col,id)=>({id,
+    async get(){const r=await api("GET",`/api/docs/${col}/${encodeURIComponent(id)}`);return {exists:r.exists,data:()=>r.data}},
+    async set(d){await api("PUT",`/api/docs/${col}/${encodeURIComponent(id)}`,d);pull(true)},
+    async update(d){await api("PATCH",`/api/docs/${col}/${encodeURIComponent(id)}`,d);pull(true)},
+    async delete(){await api("DELETE",`/api/docs/${col}/${encodeURIComponent(id)}`);pull(true)}});
+  return {api,on:fn=>listeners.push(fn),refresh:()=>pull(true),
+    doc:p=>{const [c,i]=p.split("/");return docRef(c,i)},
+    collection:col=>({doc:id=>docRef(col,id||rid())}),
+    start(){pull(true);timer=setInterval(()=>{if(!document.hidden)pull(false)},6000);document.addEventListener("visibilitychange",()=>{if(!document.hidden)pull(false)})}};
+}
+function editing(){const a=document.activeElement;return a&&a!==document.body&&(a.tagName==="INPUT"||a.tagName==="TEXTAREA"||a.tagName==="SELECT")&&a.id!=="q"}
+const byId=arr=>Object.fromEntries((arr||[]).map(d=>[d.id,d]));
+S.db=makeDb();
+S.db.on(all=>{
+  S.contractors=byId(all.contractors);S.contacts=byId(all.contacts);
+  const set=(all.settings||[]).find(d=>d.id==="business");if(set&&!(S.tab==="settings"&&editing()))S.settings=Object.assign({},DEF_SET,set);
+  const m=byId(all.jobs);
+  if(S.sel&&S.dirty&&!m[S.sel]&&S.jobs[S.sel])m[S.sel]=S.jobs[S.sel];
+  S.jobs=m;S.loaded.jobs=true;
+  if(S.sel){if(!S.dirty){if(m[S.sel])S.draft=clone(m[S.sel]);else{S.sel=null;S.draft=null}}else if(m[S.sel]&&S.draft)S.draft=mergeServer(S.draft,m[S.sel])}
+  if(editing())return;
+  render();
+});
+render();
+S.db.start();
+})();
+</script>
+</body></html>

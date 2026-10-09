@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Log in · Maintenance Job Desk</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700&family=Public+Sans:wght@400;600&display=swap">
+<link rel="stylesheet" href="/static/app.css">
+</head><body>
+<div class="wrap">
+  <div class="panel join">
+    <div class="panel-h"><h2>Maintenance Job Desk</h2><span class="hint">Office login</span></div>
+    <form class="panel-b" method="post" action="/login">
+      <div id="err" class="banner" hidden></div>
+      <label class="f"><span>Office password</span><input type="password" name="password" id="password" autocomplete="current-password" required autofocus></label>
+      <button class="btn primary big" type="submit">Log in</button>
+      <p class="hint">Contractors don't need to log in – they use the personal job link the office sent them.</p>
+    </form>
+  </div>
+</div>
+<script>
+const e=new URLSearchParams(location.search).get("e");
+const msg={bad:"That password isn't right. Try again.",wait:"Too many attempts. Wait 15 minutes and try again.",nopass:"No office password has been set on the server yet. Add OFFICE_PASSWORD in Render's environment settings."}[e];
+if(msg){const b=document.getElementById("err");b.textContent=msg;b.hidden=false}
+</script>
+</body></html>
