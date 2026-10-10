@@ -97,12 +97,23 @@ function viewList(L,done){
   return `<div class="board">${L.map(j=>{const nx=nextStep(j.track);const p=j.property;return `<article class="jcard p-${esc(j.priority)}" data-open="${esc(j.id)}" style="cursor:pointer" tabindex="0">
     <div class="top"><span class="mono">${esc(j.ref)}</span><span class="pill p-${esc(j.priority)}">${esc(PLABEL[j.priority]||"")}</span><span class="fee" style="font-size:20px">${j.agreedPrice!==""&&j.agreedPrice!=null?gbp(j.agreedPrice):""}</span></div>
     <h3>${esc(p.address||"")}${p.postcode?", "+esc(p.postcode):""}</h3>
-    <div class="meta"><span>${esc(j.category||"")}</span><span>Attend <b>${fmtDT(j.contractorAttendBy||j.attendBy)}</b></span><span>${done?(j.track.signedoff?"<b>Signed off</b>":"Awaiting sign-off"):"Next: <b>"+(nx?TLABEL[nx]:"—")+"</b>"}</span></div></article>`}).join("")}</div>`;
+    <div class="meta"><span>${esc(j.category||"")}</span><span>Attend <b>${fmtDT(j.contractorAttendBy||j.attendBy)}</b></span><span>${done?(j.track.signedoff?"<b>Signed off</b>":"Awaiting sign-off"):"Next: <b>"+(nx?TLABEL[nx]:"—")+"</b>"}</span>${j.payment?`<span>${j.payment.status==="paid"?"Paid":"Owed"} <b>${gbp(j.payment.pay)}</b></span>`:""}</div></article>`}).join("")}</div>`;
 }
 function steps(t){
   const nx=nextStep(t);
   return `<ol class="steps">${TRACK.filter(([k])=>k!=="parts"||t.parts).map(([k,l])=>`<li class="${t[k]?"done":(k===nx?"next":"")}"><b>${l}</b><small>${t[k]?fmtDT(t[k]):(k===nx?"next":"")}</small></li>`).join("")}</ol>`;
 }
+function payBox(p){
+  if(!p)return "";
+  return `<section class="panel"><div class="panel-h"><h2>Payment</h2><span class="pill ${p.status==="paid"?"s-paid":"d-open"}">${p.status==="paid"?"Paid":"Owed"}</span></div><div class="panel-b">
+    <div class="hint">Self-bill invoice ${esc(p.number)} · ${fmtD(p.issuedAt)}</div>
+    <div class="totals"><span>Labour</span><span>${gbp(p.labour)}</span>${p.materials?`<span>Materials</span><span>${gbp(p.materials)}</span>`:""}${p.vat?`<span>VAT</span><span>${gbp(p.vat)}</span>`:""}
+      <span>Invoice total</span><span>${gbp(p.gross)}</span>${p.cis?`<span class="m">CIS ${p.cisRate}%</span><span class="m">−${gbp(p.cis)}</span>`:""}
+      <span class="big">${p.status==="paid"?"Paid to you":"To be paid"}</span><span class="big">${gbp(p.pay)}</span></div>
+    ${p.status==="paid"?`<div class="hint">Paid ${fmtD(p.paidAt)}${p.paidRef?" · ref "+esc(p.paidRef):""}</div>`:""}
+    ${p.note?`<div class="hint">${esc(p.note)}</div>`:""}</div></section>`;
+}
+const fmtD=iso=>{if(!iso)return"—";const d=new Date(iso);return isNaN(d)?esc(iso):d.toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"})};
 function viewMine(j){
   const p=j.property,t=j.track,nx=nextStep(t);
   const res=j.residents.map(r=>`<div><b>${esc(r.name)}</b> <a class="mono" href="tel:${esc(String(r.phone||"").replace(/\s/g,""))}">${esc(r.phone)}</a>${r.notes?` <span class="hint">${esc(r.notes)}</span>`:""}</div>`).join("");
@@ -136,6 +147,7 @@ function viewMine(j){
    ${!t.done&&t.onsite?`<section class="panel"><div class="panel-h"><h2>Finish the job</h2></div><div class="panel-b">
      <label class="f"><span>What did you do?</span><textarea id="kdone" placeholder="e.g. Replaced 15mm elbow under sink, tested, no leaks.">${esc(j.findings)}</textarea></label>
      <button class="btn go big" data-act="done" data-id="${esc(j.id)}" ${S.busy?"disabled":""}>Mark work complete</button></div></section>`:""}
+   ${payBox(j.payment)}
    <section class="panel"><div class="panel-h"><h2>Notes to office</h2></div><div class="panel-b">
      <div class="row"><input id="knote" placeholder="e.g. Tenant not in, rebooking for 10am" style="flex:1;min-width:200px"><button class="btn" data-act="note" data-id="${esc(j.id)}">Send note</button></div>
      ${j.notes.length?`<ul class="log">${j.notes.map(n=>`<li><time>${fmtDT(n.at)}</time><span><span class="who">${esc(n.who)}:</span> ${esc(n.text)}</span></li>`).join("")}</ul>`:""}

@@ -116,7 +116,7 @@ function timeline(j){
 
 /* ---------- render ---------- */
 function renderTabs(){
-  const tabs=[["jobs","Jobs"],["contractors","Contractors"],["contacts","Contacts"],["invoices","Invoices"],["settings","Settings"]];
+  const tabs=[["jobs","Jobs"],["contractors","Contractors"],["contacts","Contacts"],["invoices","Invoices"],["payments","Contractor payments"],["settings","Settings"]];
   $("#tabs").innerHTML=tabs.map(([k,l])=>`<button class="tab" role="tab" data-tab="${k}" aria-selected="${S.tab===k}">${l}</button>`).join("")
     +`<form method="post" action="/logout" style="display:inline"><button class="tab" type="submit">Log out</button></form>`;
 }
@@ -134,6 +134,7 @@ function render(){
   else if(S.tab==="contractors")m.innerHTML=viewContractors();
   else if(S.tab==="contacts")m.innerHTML=viewContacts();
   else if(S.tab==="invoices")m.innerHTML=viewInvoices();
+  else if(S.tab==="payments")m.innerHTML=viewPayments();
   else m.innerHTML=viewSettings();
 }
 
@@ -448,6 +449,8 @@ function viewSheet(){
        :`<p class="hint">${c.total?"Issuing gives this job the next invoice number, sets payment due in "+esc(S.settings.payDays)+" days and moves it to Invoiced.":"Add a call-out, labour or materials to raise an invoice."}</p>`}
    </section>
 
+   ${viewPayoutSection(j)}
+
    <section class="sec">
      <div class="row">${S.confirmDel?`<span>Delete ${esc(j.ref)} permanently?</span><button class="btn danger" data-act="del-job-yes">Yes, delete</button><button class="btn" data-act="del-job-no">Keep it</button>`:`<button class="btn small danger" data-act="del-job" ${ro?"disabled":""}>Delete job</button>`}</div>
    </section>
@@ -455,6 +458,117 @@ function viewSheet(){
   <datalist id="suppliers"><option value="${KPS.name}"></option><option value="Own stock (van)"></option><option value="Other merchant"></option></datalist>
   <datalist id="ptypes"><option value="Flat"></option><option value="House"></option><option value="Maisonette"></option><option value="HMO"></option><option value="Commercial unit"></option></datalist>`;
 }
+/* ---------- contractor payments (self-billing) ---------- */
+const CIS=[["none","Not CIS / not construction work",0],["gross","CIS – gross payment status (0%)",0],["registered","CIS – registered (20%)",20],["unregistered","CIS – not registered (30%)",30]];
+const CISLABEL=Object.fromEntries(CIS.map(x=>[x[0],x[1]]));
+const cisRate=k=>{const x=CIS.find(c=>c[0]===(k&&k.cis||"none"));return x?x[2]:0};
+function payCalc(p){
+  const labour=n(p.labour),mats=n(p.materials),extras=(p.extras||[]).reduce((a,e)=>a+n(e.amount),0);
+  const labourAll=labour+extras;
+  const cis=Math.round(labourAll*n(p.cisRate))/100;
+  const net=labourAll+mats;
+  const vat=p.vatRegistered?Math.round(net*20)/100:0;
+  const gross=net+vat;
+  return {labour,mats,extras,labourAll,cis,net,vat,gross,pay:gross-cis};
+}
+function newPayout(j){
+  const d=D(j),k=S.contractors[d.allocatedTo]||{};
+  return {number:nextRef("SB-",x=>x.payout&&x.payout.number),issuedAt:new Date().toISOString().slice(0,10),
+    labour:d.agreedPrice!==""&&d.agreedPrice!=null?n(d.agreedPrice):0,materials:0,extras:[],
+    cisStatus:k.cis||"none",cisRate:cisRate(k),vatRegistered:!!k.vatRegistered,vatNumber:k.vatNumber||"",
+    contractorId:d.allocatedTo,status:"owed",note:""};
+}
+function viewPayoutSection(j){
+  const d=D(j);
+  if(!d.allocatedTo&&!j.payout)return "";
+  const k=S.contractors[(j.payout&&j.payout.contractorId)||d.allocatedTo]||{};
+  const p=j.payout,ro=!S.canWrite;
+  if(!p){
+    const done=(j.track||{}).done;
+    return `<section class="sec"><div class="sec-h"><span class="n">12</span><h3>Contractor payment</h3>
+      <div class="act"><button class="btn small primary" data-act="p-create" ${ro?"disabled":""}>Create self-bill invoice</button></div></div>
+      <p class="hint">Makes the invoice from <b>${esc(k.name||"the contractor")}</b> to you for this job (self-billing), starting from the agreed price ${d.agreedPrice!==""&&d.agreedPrice!=null?gbp(d.agreedPrice):""}. ${done?"":"Usually done once the work is complete."}${k.cis&&k.cis!=="none"?"":" Set their CIS and VAT status on the Contractors tab first if it applies."}</p></section>`;
+  }
+  const c=payCalc(p);
+  const ex=(p.extras||[]).map((e,i)=>`<tr><td><input data-path="payout.extras.${i}.desc" value="${esc(e.desc)}" placeholder="e.g. Second visit"></td><td style="width:120px"><input type="number" step="0.01" data-path="payout.extras.${i}.amount" value="${esc(e.amount)}"></td><td style="width:40px"><button class="btn small danger" data-act="p-delextra" data-i="${i}" aria-label="Remove line">✕</button></td></tr>`).join("");
+  return `<section class="sec"><div class="sec-h"><span class="n">12</span><h3>Contractor payment</h3>
+    <div class="act"><span class="pill ${p.status==="paid"?"s-paid":"d-open"}">${esc(p.number)} · ${p.status==="paid"?"Paid":"Owed"}</span>
+      <button class="btn small" data-act="p-dl">Download</button>
+      ${k.phone?`<a class="btn small wa" href="${esc(waLink(k.phone,payoutText(j)))}" target="_blank" rel="noopener">Send on WhatsApp</a>`:""}
+      ${p.status!=="paid"?`<button class="btn small go" data-act="p-paid" ${ro?"disabled":""}>Mark paid</button>`:""}</div></div>
+    <p class="hint">Self-bill invoice from <b>${esc(kName(p.contractorId))}</b> to ${esc(S.settings.bizName||"you")} · ${esc(CISLABEL[p.cisStatus]||"")}${p.vatRegistered?" · VAT registered "+esc(p.vatNumber||""):""}. Changes save with <b>Save job</b>.</p>
+    <div class="g">
+      <label class="f"><span>Labour / agreed price £</span><input type="number" step="0.01" data-path="payout.labour" value="${esc(p.labour)}"></label>
+      <label class="f"><span>Materials they paid for £</span><input type="number" step="0.01" data-path="payout.materials" value="${esc(p.materials)}"></label>
+      <label class="f"><span>Self-bill date</span><input type="date" data-path="payout.issuedAt" value="${esc(p.issuedAt)}"></label>
+      <label class="f"><span>CIS deduction %</span><select data-path="payout.cisRate">${opts([["0","0%"],["20","20%"],["30","30%"]],String(n(p.cisRate)))}</select></label>
+    </div>
+    ${ex?`<div class="tablewrap"><table class="lines"><thead><tr><th>Extra labour / work</th><th>Amount £</th><th></th></tr></thead><tbody>${ex}</tbody></table></div>`:""}
+    <div class="row"><button class="btn small" data-act="p-addextra">+ Extra line</button>
+      <label class="f" style="flex:1;min-width:200px"><span>Note on remittance</span><input data-path="payout.note" value="${esc(p.note)}" placeholder="e.g. Includes parking"></label></div>
+    <div class="totals" id="paytotals">${payTotalsHTML(c,p)}</div>
+    ${p.status==="paid"?`<p class="hint">Paid ${fmtD(p.paidAt)}${p.paidRef?" · ref "+esc(p.paidRef):""}</p>`:
+      `<div class="row"><input id="payref" placeholder="Bank transfer reference (optional)" style="flex:1;min-width:200px"><span class="hint">Mark paid records today's date and this reference.</span></div>`}
+  </section>`;
+}
+function payTotalsHTML(c,p){
+  return `<span>Labour${c.extras?" incl. extras":""}</span><span>${gbp(c.labourAll)}</span>
+    <span>Materials</span><span>${gbp(c.mats)}</span>
+    ${p.vatRegistered?`<span>VAT 20%</span><span>${gbp(c.vat)}</span>`:""}
+    <span>Invoice total</span><span>${gbp(c.gross)}</span>
+    ${c.cis?`<span class="m">Less CIS ${n(p.cisRate)}% on labour</span><span class="m">−${gbp(c.cis)}</span>`:""}
+    <span class="big">To pay contractor</span><span class="big">${gbp(c.pay)}</span>`;
+}
+function payoutText(j){
+  const p=j.payout,c=payCalc(p),k=S.contractors[p.contractorId]||{},pr=j.property||{};
+  return [`Hi ${(k.name||"").split(" ")[0]}, payment details for job ${j.ref}`,`${[pr.address,pr.postcode].filter(Boolean).join(", ")}`,"",
+    `Self-bill invoice ${p.number} (${fmtD(p.issuedAt)})`,`Labour: ${gbp(c.labourAll)}`,c.mats?`Materials: ${gbp(c.mats)}`:"",p.vatRegistered?`VAT: ${gbp(c.vat)}`:"",
+    `Invoice total: ${gbp(c.gross)}`,c.cis?`CIS deducted (${n(p.cisRate)}%): -${gbp(c.cis)}`:"",`Amount ${p.status==="paid"?"paid":"to pay"}: ${gbp(c.pay)}`,
+    p.status==="paid"?`Paid ${fmtD(p.paidAt)}${p.paidRef?", ref "+p.paidRef:""}`:"",p.note?`Note: ${p.note}`:"","",`Thanks – ${S.settings.bizName||""}`].filter(x=>x!=="").join("\n");
+}
+function payoutDoc(j){
+  const p=j.payout,c=payCalc(p),k=S.contractors[p.contractorId]||{},s=S.settings,pr=j.property||{};
+  const rows=[[`Labour – ${j.category||"maintenance"}: ${j.description||""}`,c.labour]].concat((p.extras||[]).filter(e=>n(e.amount)).map(e=>[e.desc||"Extra work",n(e.amount)])).concat(c.mats?[["Materials supplied by contractor",c.mats]]:[]);
+  const body=`<div class="top"><div><h1>SELF-BILLED INVOICE</h1><div class="muted">Issued by the customer on behalf of the supplier under a self-billing agreement</div></div>
+    <div class="r"><b>${esc(p.number)}</b><br>Date: ${fmtD(p.issuedAt)}<br>Job: ${esc(j.ref)}</div></div>
+   <div class="top" style="margin-top:14px"><div><h2>Supplier (contractor)</h2>${[k.name,k.company,k.address,k.phone,k.email].filter(Boolean).map(esc).join("<br>")}${k.utr?"<br>UTR: "+esc(k.utr):""}${p.vatRegistered?"<br>VAT no: "+esc(p.vatNumber||""):""}</div>
+     <div><h2>Customer</h2>${[s.bizName,s.bizAddress,s.bizPhone,s.bizEmail].filter(Boolean).map(esc).join("<br>")}</div></div>
+   <h2>Work</h2><div><b>${esc([pr.address,pr.postcode].filter(Boolean).join(", "))}</b><br>${esc(j.findings||j.description||"")}${j.completedAt?"<br><span class='muted'>Completed "+fmtD(j.completedAt)+"</span>":""}</div>
+   <h2>Charges</h2><table><tr><th>Description</th><th class="r">Amount</th></tr>${rows.map(r=>`<tr><td>${esc(r[0])}</td><td class="r">${gbp(r[1])}</td></tr>`).join("")}</table>
+   <table class="tot" style="width:auto;margin-left:auto;margin-top:8px">
+     ${p.vatRegistered?`<tr><td>Net</td><td class="r">${gbp(c.net)}</td></tr><tr><td>VAT 20%</td><td class="r">${gbp(c.vat)}</td></tr>`:""}
+     <tr><td>Invoice total</td><td class="r"><b>${gbp(c.gross)}</b></td></tr>
+     ${c.cis?`<tr><td>Less CIS deduction ${n(p.cisRate)}% (labour ${gbp(c.labourAll)})</td><td class="r">−${gbp(c.cis)}</td></tr>`:""}
+     <tr><td class="big">Amount ${p.status==="paid"?"paid":"payable"}</td><td class="r big">${gbp(c.pay)}</td></tr></table>
+   <h2>Payment</h2><div>${p.status==="paid"?`Paid on ${fmtD(p.paidAt)}${p.paidRef?" – reference "+esc(p.paidRef):""}`:"Payment pending"}${k.bankName||k.accountNo?`<br>To: ${esc(k.bankName||"")} · sort code ${esc(k.sortCode||"")} · account ${esc(k.accountNo||"")}`:""}</div>
+   ${c.cis?`<p class="muted">CIS: ${gbp(c.cis)} deducted and paid to HMRC on the contractor's behalf. Keep this as your payment and deduction statement.</p>`:""}
+   ${p.vatRegistered?"":`<p class="muted">Supplier not VAT registered.</p>`}
+   ${p.note?`<p>${esc(p.note)}</p>`:""}`;
+  return docWrap("Self-bill "+p.number,body);
+}
+function viewPayments(){
+  const all=jobsArr().filter(j=>j.payout);
+  const fk=S.payFilter||"";
+  const list=all.filter(j=>!fk||j.payout.contractorId===fk).sort((a,b)=>String(b.payout.number).localeCompare(String(a.payout.number)));
+  const due=jobsArr().filter(j=>D(j).allocatedTo&&(j.track||{}).done&&!j.payout);
+  const sum=(arr,st)=>arr.filter(j=>!st||j.payout.status===st).reduce((a,j)=>a+payCalc(j.payout).pay,0);
+  const cisTotal=list.reduce((a,j)=>a+payCalc(j.payout).cis,0);
+  const byK={};all.forEach(j=>{const id=j.payout.contractorId;const c=payCalc(j.payout);byK[id]=byK[id]||{owed:0,paid:0,cis:0,n:0};byK[id][j.payout.status==="paid"?"paid":"owed"]+=c.pay;byK[id].cis+=c.cis;byK[id].n++});
+  const rows=list.map(j=>{const c=payCalc(j.payout);return `<tr class="click" data-openjob="${esc(j.id)}"><td class="mono">${esc(j.payout.number)}</td><td>${esc(kName(j.payout.contractorId))}<br><span class="hint">${esc(j.ref)} · ${esc((j.property&&j.property.address)||"")}</span></td><td>${fmtD(j.payout.issuedAt)}</td><td>${j.payout.status==="paid"?'<span class="pill s-paid">Paid</span>':'<span class="pill d-open">Owed</span>'}</td><td class="r num">${c.cis?"−"+gbp(c.cis):"—"}</td><td class="r num"><b>${gbp(c.pay)}</b></td></tr>`}).join("");
+  const kRows=Object.entries(byK).map(([id,v])=>`<tr class="click" data-payk="${esc(id)}"><td>${esc(kName(id))}</td><td class="r num">${v.n}</td><td class="r num">${gbp(v.owed)}</td><td class="r num">${gbp(v.paid)}</td><td class="r num">${gbp(v.cis)}</td></tr>`).join("");
+  return `<div class="strip" style="grid-template-columns:repeat(4,minmax(0,1fr))">
+     <div class="stat ${due.length?"alert":""}"><small>Done, no self-bill yet</small><b>${due.length}</b></div>
+     <div class="stat"><small>Owed to contractors</small><b>${gbp(sum(all,"owed"))}</b></div>
+     <div class="stat"><small>Paid to contractors</small><b>${gbp(sum(all,"paid"))}</b></div>
+     <div class="stat"><small>CIS deducted${fk?" (filtered)":""}</small><b>${gbp(cisTotal)}</b></div></div>
+   <div style="display:grid;gap:16px">
+   ${due.length?`<div class="panel"><div class="panel-h"><h2>Completed jobs waiting for a self-bill</h2></div><div class="tablewrap"><table class="grid"><thead><tr><th>Job</th><th>Contractor</th><th>Completed</th><th class="r">Agreed</th></tr></thead><tbody>${due.map(j=>`<tr class="click" data-openjob="${esc(j.id)}"><td class="mono">${esc(j.ref)}</td><td>${esc(kName(D(j).allocatedTo))}</td><td>${fmtD(j.completedAt||(j.track||{}).done)}</td><td class="r num">${D(j).agreedPrice!==""&&D(j).agreedPrice!=null?gbp(D(j).agreedPrice):"—"}</td></tr>`).join("")}</tbody></table></div></div>`:""}
+   ${kRows?`<div class="panel"><div class="panel-h"><h2>By contractor</h2><span class="hint">Click a row to filter</span>${fk?`<button class="btn small" data-act="p-clearfilter">Show all</button>`:""}</div><div class="tablewrap"><table class="grid"><thead><tr><th>Contractor</th><th class="r">Self-bills</th><th class="r">Owed</th><th class="r">Paid</th><th class="r">CIS deducted</th></tr></thead><tbody>${kRows}</tbody></table></div></div>`:""}
+   <div class="panel"><div class="panel-h"><h2>Self-bill invoices${fk?" – "+esc(kName(fk)):""}</h2><span class="hint">Open one to edit, download, send on WhatsApp or mark paid</span></div>
+   <div class="tablewrap">${rows?`<table class="grid"><thead><tr><th>No.</th><th>Contractor / job</th><th>Date</th><th>Status</th><th class="r">CIS</th><th class="r">To pay</th></tr></thead><tbody>${rows}</tbody></table>`:'<div class="empty">No contractor self-bills yet. Open a job a contractor has completed and press <b>Create self-bill invoice</b> in section 12.</div>'}</div></div>
+   <p class="hint">Self-billing needs a written agreement with each contractor. CIS deductions must be paid to HMRC monthly and shown on each contractor's statement. Check the setup with your accountant.</p></div>`;
+}
+
 function totalsHTML(c){
   return `<span>Materials (cost ${gbp(c.matCost)} + ${c.mk}%)</span><span>${gbp(c.matCharge)}</span>
    <span>Labour</span><span>${gbp(c.labour)}</span>
@@ -551,6 +665,12 @@ function viewContractors(){
      <div><span class="hint" style="text-transform:uppercase;font-weight:600;letter-spacing:.05em">Trades covered</span><div class="picklist" style="margin-top:4px">${CATEGORIES.map(c=>`<label><input type="checkbox" data-ktrade="${esc(c)}" ${(d.trades||[]).includes(c)?"checked":""}> ${esc(c)}</label>`).join("")}</div><span class="hint">Leave all unticked if they do everything.</span></div>
      <div class="g">${txt("areas","Areas covered (postcodes)")}${txt("gasSafe","Gas Safe reg. no.")}</div>
      <div class="g">${txt("rate","Usual hourly rate £","number")}${txt("callout","Usual call-out £","number")}${txt("insurance","Insurance expiry","date")}</div>
+     <div class="callout"><span class="hint" style="text-transform:uppercase;font-weight:600;letter-spacing:.05em">Payments &amp; tax – used on self-bill invoices</span>
+       <div class="g">${txt("bankName","Bank / account name")}${txt("sortCode","Sort code")}${txt("accountNo","Account number")}</div>
+       <div class="g">${txt("utr","UTR (tax reference)")}<label class="f"><span>CIS status</span><select data-kpath="cis">${opts(CIS.map(x=>[x[0],x[1]]),d.cis||"none")}</select></label></div>
+       <div class="row"><label class="row" style="gap:6px"><input type="checkbox" data-kpath="vatRegistered" ${d.vatRegistered?"checked":""}> VAT registered</label>${d.vatRegistered?txt("vatNumber","VAT number"):""}</div>
+       <div class="row"><label class="row" style="gap:6px"><input type="checkbox" data-kpath="selfBillAgreed" ${d.selfBillAgreed?"checked":""}> Self-billing agreement signed</label>${d.selfBillAgreed?txt("selfBillDate","Agreement date","date"):""}</div>
+     </div>
      <label class="f"><span>Notes</span><textarea data-kpath="notes" style="min-height:56px">${esc(d.notes)}</textarea></label>
      <label class="row" style="gap:6px;font-weight:600"><input type="checkbox" data-kpath="active" ${d.active!==false?"checked":""}> Active – receives new jobs</label>
      <div class="callout"><span class="hint" style="text-transform:uppercase;font-weight:600;letter-spacing:.05em">Personal job link – no login needed</span>
@@ -662,7 +782,8 @@ async function officeUpdate(obj,logText){
 }
 
 document.addEventListener("click",async ev=>{
-  const t=ev.target.closest("[data-tab],[data-filter],[data-job],[data-act],[data-contact],[data-kontr],[data-openjob]");if(!t)return;
+  const t=ev.target.closest("[data-tab],[data-filter],[data-job],[data-act],[data-contact],[data-kontr],[data-openjob],[data-payk]");if(!t)return;
+  if(t.dataset.payk){S.payFilter=t.dataset.payk;render();return}
   if(t.dataset.tab){S.tab=t.dataset.tab;try{localStorage.setItem("jd-tab",S.tab)}catch(e){}render();return}
   if(t.dataset.filter){S.filter=t.dataset.filter;if(S.tab!=="jobs")S.tab="jobs";render();return}
   if(t.dataset.job&&!t.dataset.act){selectJob(t.dataset.job);return}
@@ -740,6 +861,16 @@ document.addEventListener("click",async ev=>{
     /* contractors (office) */
     case "k-new":S.kDraft={id:S.db.collection("contractors").doc().id,token:newToken(),active:true,trades:[]};render();break;
     case "k-copylink":copy(linkFor(S.kDraft),"job link");break;
+
+    /* contractor payments */
+    case "p-create":{const k=S.contractors[D(j).allocatedTo]||{};j.payout=newPayout(j);logEntry(`Self-bill ${j.payout.number} created for ${kName(D(j).allocatedTo)}`);S.touched.add("payout");
+      await saveJob();if(!k.selfBillAgreed)toast("Saved. Note: no self-billing agreement recorded for this contractor yet");break}
+    case "p-addextra":j.payout.extras=(j.payout.extras||[]).concat([{desc:"",amount:""}]);markDirty("payout");render();break;
+    case "p-delextra":j.payout.extras.splice(+t.dataset.i,1);markDirty("payout");render();break;
+    case "p-paid":{const ref=($("#payref")||{}).value||"";j.payout.status="paid";j.payout.paidAt=new Date().toISOString().slice(0,10);j.payout.paidRef=ref.trim();
+      logEntry(`Contractor paid ${gbp(payCalc(j.payout).pay)} (${j.payout.number})`);S.touched.add("payout");await saveJob();break}
+    case "p-dl":saveFile(j.payout.number+" self-bill.html",payoutDoc(j));break;
+    case "p-clearfilter":S.payFilter="";render();break;
     case "k-rotate":{try{const r=await S.db.api("POST",`/api/contractors/${S.kDraft.id}/rotate`);S.kDraft.token=r.token;if(S.contractors[S.kDraft.id])S.contractors[S.kDraft.id].token=r.token;toast("New link made – the old one no longer works");render()}catch(e){writeErr(e)}break}
     case "k-cancel":S.kDraft=null;render();break;
     case "k-save":{const d=S.kDraft;if(!d.name||!d.phone){toast("Add a name and mobile number");break}if(await write("contractors/"+d.id,d)){toast("Contractor saved");S.kDraft=null;render()}break}
@@ -759,7 +890,7 @@ function onField(ev){
   const el=ev.target;
   if(el.id==="q"){S.q=el.value;const pos=el.selectionStart;render();const q=$("#q");q.focus();try{q.setSelectionRange(pos,pos)}catch(e){}return}
   if(el.dataset.cpath&&S.cDraft){S.cDraft[el.dataset.cpath]=el.value;return}
-  if(el.dataset.kpath&&S.kDraft){S.kDraft[el.dataset.kpath]=el.type==="checkbox"?el.checked:el.value;if(el.dataset.kpath==="phone")return;return}
+  if(el.dataset.kpath&&S.kDraft){S.kDraft[el.dataset.kpath]=el.type==="checkbox"?el.checked:el.value;if(el.type==="checkbox")render();return}
   if(el.dataset.ktrade&&S.kDraft){const s=new Set(S.kDraft.trades||[]);el.checked?s.add(el.dataset.ktrade):s.delete(el.dataset.ktrade);S.kDraft.trades=[...s];return}
   if(el.dataset.spath){const k=el.dataset.spath;S.settings[k]=el.type==="checkbox"?el.checked:(el.type==="number"?n(el.value):el.value);if(el.type==="checkbox")render();return}
   if(el.dataset.pick&&S.draft){const d=S.draft.dispatch=S.draft.dispatch||{};const s=new Set(d.picked||[]);el.checked?s.add(el.dataset.pick):s.delete(el.dataset.pick);d.picked=[...s];markDirty("dispatch");return}
@@ -767,6 +898,7 @@ function onField(ev){
   const p=el.dataset.path,old=getPath(S.draft,p);
   setPath(S.draft,p,el.type==="checkbox"?el.checked:el.value);markDirty(p);
   if(p==="dispatch.mode"||p==="dispatch.sendTo"){render();return}
+  if(p.startsWith("payout.")){const pt=$("#paytotals");if(pt)pt.innerHTML=payTotalsHTML(payCalc(S.draft.payout),S.draft.payout);return}
   if(p==="status"&&old!==el.value){logEntry("Status: "+(SLABEL[old]||old)+" → "+SLABEL[el.value]);if(el.value==="complete"&&!S.draft.completedAt)S.draft.completedAt=nowLocal();render();return}
   if(p==="priority"){const pr=PRIORITIES.find(x=>x[0]===el.value);S.draft.attendBy=addHours(S.draft.reportedAt||nowLocal(),pr[2]);
     if(el.value==="emergency"&&n(S.draft.callout)===n(S.settings.calloutDay))S.draft.callout=S.settings.calloutOOH;
