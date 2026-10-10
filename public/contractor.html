@@ -15,6 +15,7 @@
   <main id="main"><div class="empty">Loading your jobs…</div></main>
 </div>
 <div id="toast" class="toast" hidden></div>
+<script src="/static/details-form.js"></script>
 <script>
 (function(){
 "use strict";
@@ -25,6 +26,7 @@ const TRACK=[["accepted","Accepted"],["booked","Booked in"],["enroute","On the w
 const TLABEL=Object.fromEntries(TRACK);
 const S={data:null,tab:"available",sel:null,seen:null,newCount:0,busy:false,error:null};
 try{const t=localStorage.getItem("cb-tab");if(t)S.tab=t}catch(e){}
+if(location.hash==="#details")S.tab="details";
 const $=s=>document.querySelector(s);
 const esc=v=>String(v==null?"":v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const gbp=v=>"£"+(Number(v)||0).toLocaleString("en-GB",{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -64,7 +66,7 @@ function render(){
   if(!d)return;
   $("#title").textContent=d.office.name?d.office.name+" jobs":"Job Board";
   $("#sub").textContent=d.me.name+(d.me.company?" · "+d.me.company:"");
-  const tabs=[["available","Available",d.board.length],["mine","My jobs",mineOpen().length],["done","Completed",0]];
+  const tabs=[["available","Available",d.board.length],["mine","My jobs",mineOpen().length],["done","Completed",0],["details","My details",d.needsDetails?"!":0]];
   $("#tabs").innerHTML=tabs.map(([k,l,b])=>`<button class="tab" data-tab="${k}" aria-selected="${S.tab===k&&!S.sel}">${l}${b?`<span class="badge">${b}</span>`:""}</button>`).join("");
   let b="";
   if(S.error)b+=`<div class="banner">${esc(S.error)}</div>`;
@@ -72,6 +74,7 @@ function render(){
   $("#banner").innerHTML=b;
   document.title=(S.newCount?"("+S.newCount+") ":"")+"Job Board";
   const sel=S.sel&&d.mine.find(j=>j.id===S.sel);
+  if(S.tab==="details"&&!sel){viewDetails();return}
   $("#main").innerHTML=sel?viewMine(sel):S.tab==="available"?viewBoard():viewList(S.tab==="done"?mineDone():mineOpen(),S.tab==="done");
 }
 function viewBoard(){
@@ -154,6 +157,17 @@ function viewMine(j){
      ${!t.done?(S.confirmBack===j.id?`<div class="row"><span>Hand this job back to the office?</span><button class="btn danger" data-act="handback-yes" data-id="${esc(j.id)}">Yes, hand back</button><button class="btn" data-act="handback-no">Keep it</button></div>`
        :`<button class="btn small danger" data-act="handback" style="justify-self:start">Can't do this job – hand it back</button>`):""}
    </div></section></div>`;
+}
+
+/* ---------- my details ---------- */
+async function viewDetails(){
+  const m=$("#main");
+  if(editing()&&m.querySelector("#dform"))return;
+  if(!S.profile){m.innerHTML='<div class="empty">Loading your details…</div>';try{S.profile=await api("GET","/profile")}catch(e){m.innerHTML=`<div class="empty">${esc(e.message)}</div>`;return}}
+  if(S.tab!=="details"||S.sel)return;
+  const p=S.profile;
+  m.innerHTML=`<p class="hint">Keep these up to date so we can send you the right jobs and pay you correctly.</p>`+DetailsForm.html({values:p,categories:p.categories,agreement:p.agreement,mode:"details"});
+  DetailsForm.wire(m,async data=>{await api("POST","/profile",data);S.profile=null;toast("Details saved");await load();S.profile=await api("GET","/profile");if(S.tab==="details"){document.activeElement&&document.activeElement.blur();viewDetails()}});
 }
 
 /* ---------- events ---------- */

@@ -652,13 +652,22 @@ function saveFile(name,html){
 
 /* ---------- contractors (office) ---------- */
 function inviteText(k){const s=S.settings;return `Hi ${(k.name||"").split(" ")[0]}, you've been added to the ${s.bizName?s.bizName+" ":""}maintenance job board.\n\nYour personal job link (save it, no login needed):\n${linkFor(k)}\n\nWhen a job comes up you'll get a WhatsApp message here with Accept and Not for me buttons. First to accept gets the job. Use the link to set your attend time, send quotes and update progress: on the way, on site, complete.\n\nPlease reply OK to confirm you're happy to receive job alerts on this number.`}
+function joinLink(){return `${S.baseUrl||location.origin}/join`}
+function joinText(){const s=S.settings;return `We're looking for reliable trades for property maintenance jobs in London${s.bizName?" with "+s.bizName:""}: repairs, leaks, heating, drainage and more.\n\nSign up here (takes 3 minutes):\n${joinLink()}\n\nOnce approved you'll get job alerts on WhatsApp. First to accept gets the job.`}
+function detailsText(k){const s=S.settings;return `Hi ${(k.name||"").split(" ")[0]}, please check and complete your details for ${s.bizName||"our job board"}: bank details, UTR/CIS status and insurance, and accept the self-billing agreement so we can pay you correctly.\n\n${linkFor(k)}#details\n\nIt opens on your "My details" tab. Thanks!`}
+function needsDetails(k){return !k.selfBillAgreed||!k.accountNo}
 function viewContractors(){
-  const list=Object.values(S.contractors).sort((a,b)=>(a.active===false)-(b.active===false)||(a.name||"").localeCompare(b.name||""));
+  const rank=k=>k.pending?0:(k.active===false?2:1);
+  const list=Object.values(S.contractors).sort((a,b)=>rank(a)-rank(b)||(a.name||"").localeCompare(b.name||""));
+  const pend=list.filter(k=>k.pending).length;
   const stats=id=>{const js=Object.values(S.jobs).filter(j=>D(j).allocatedTo===id);return {live:js.filter(j=>!(j.track||{}).done).length,done:js.filter(j=>(j.track||{}).done).length}};
-  const rows=list.map(k=>{const s=stats(k.id);return `<tr class="click" data-kontr="${esc(k.id)}"><td><b>${esc(k.name)}</b>${k.example?' <span class="example">example</span>':""}<br><span class="hint">${esc(k.company||"")}</span></td><td>${esc((k.trades||[]).join(", ")||"All trades")}<br><span class="hint">${esc(k.areas||"")}</span></td><td class="mono">${esc(k.phone||"")}</td><td>${k.active===false?'<span class="pill">Paused</span>':'<span class="pill d-allocated">Active</span>'}</td><td class="r num">${s.live} / ${s.done}</td></tr>`}).join("");
+  const rows=list.map(k=>{const s=stats(k.id);return `<tr class="click" data-kontr="${esc(k.id)}"><td><b>${esc(k.name)}</b>${k.example?' <span class="example">example</span>':""}<br><span class="hint">${esc(k.company||"")}</span></td><td>${esc((k.trades||[]).join(", ")||"All trades")}<br><span class="hint">${esc(k.areas||"")}</span></td><td class="mono">${esc(k.phone||"")}</td><td>${k.pending?'<span class="pill d-open">New application</span>':k.active===false?'<span class="pill">Paused</span>':'<span class="pill d-allocated">Active</span>'}${!k.pending&&needsDetails(k)?'<br><span class="hint">Details missing</span>':''}</td><td class="r num">${s.live} / ${s.done}</td></tr>`}).join("");
   const d=S.kDraft;
   const txt=(k,l,t)=>`<label class="f"><span>${l}</span><input type="${t||"text"}" data-kpath="${k}" value="${esc(d[k])}"></label>`;
-  const form=d?`<div class="panel"><div class="panel-h"><h2>${S.contractors[d.id]?"Edit contractor":"New contractor"}</h2></div><div class="panel-b">
+  const form=d?`<div class="panel"><div class="panel-h"><h2>${d.pending?"Application":S.contractors[d.id]?"Edit contractor":"New contractor"}</h2>${d.detailsUpdatedAt?`<span class="hint">Updated by contractor ${fmtDT(d.detailsUpdatedAt)}</span>`:""}</div><div class="panel-b">
+     ${d.pending?`<div class="callout"><b>Applied ${fmtDT(d.appliedAt)} through your sign-up link.</b>${d.about?`<div class="hint" style="white-space:pre-line">${esc(d.about)}</div>`:""}
+       <div class="row"><button class="btn go" data-act="k-approve" ${S.canWrite?"":"disabled"}>Approve &amp; give job link</button><button class="btn danger" data-act="k-reject">Reject &amp; delete</button></div>
+       <span class="hint">Check their Gas Safe number, insurance and references before approving.</span></div>`:""}
      <div class="g">${txt("name","Contact name")}${txt("company","Company name")}</div>
      <div class="g">${txt("phone","Mobile (WhatsApp)","tel")}${txt("email","Email","email")}</div>
      <label class="f"><span>Address</span><textarea data-kpath="address" style="min-height:56px">${esc(d.address)}</textarea></label>
@@ -667,20 +676,27 @@ function viewContractors(){
      <div class="g">${txt("rate","Usual hourly rate £","number")}${txt("callout","Usual call-out £","number")}${txt("insurance","Insurance expiry","date")}</div>
      <div class="callout"><span class="hint" style="text-transform:uppercase;font-weight:600;letter-spacing:.05em">Payments &amp; tax – used on self-bill invoices</span>
        <div class="g">${txt("bankName","Bank / account name")}${txt("sortCode","Sort code")}${txt("accountNo","Account number")}</div>
-       <div class="g">${txt("utr","UTR (tax reference)")}<label class="f"><span>CIS status</span><select data-kpath="cis">${opts(CIS.map(x=>[x[0],x[1]]),d.cis||"none")}</select></label></div>
+       <div class="g">${txt("utr","UTR (tax reference)")}${txt("niNumber","NI number")}${txt("companyNumber","Company number")}<label class="f"><span>CIS status</span><select data-kpath="cis">${opts(CIS.map(x=>[x[0],x[1]]),d.cis||"none")}</select></label></div>
        <div class="row"><label class="row" style="gap:6px"><input type="checkbox" data-kpath="vatRegistered" ${d.vatRegistered?"checked":""}> VAT registered</label>${d.vatRegistered?txt("vatNumber","VAT number"):""}</div>
        <div class="row"><label class="row" style="gap:6px"><input type="checkbox" data-kpath="selfBillAgreed" ${d.selfBillAgreed?"checked":""}> Self-billing agreement signed</label>${d.selfBillAgreed?txt("selfBillDate","Agreement date","date"):""}</div>
+       ${d.selfBillSignedName?`<span class="hint">Accepted online by ${esc(d.selfBillSignedName)} on ${esc(d.selfBillDate)}</span>`:""}
      </div>
      <label class="f"><span>Notes</span><textarea data-kpath="notes" style="min-height:56px">${esc(d.notes)}</textarea></label>
      <label class="row" style="gap:6px;font-weight:600"><input type="checkbox" data-kpath="active" ${d.active!==false?"checked":""}> Active – receives new jobs</label>
-     <div class="callout"><span class="hint" style="text-transform:uppercase;font-weight:600;letter-spacing:.05em">Personal job link – no login needed</span>
+     ${d.pending?"":`<div class="callout"><span class="hint" style="text-transform:uppercase;font-weight:600;letter-spacing:.05em">Personal job link – no login needed</span>
        <div class="mono" style="word-break:break-all;font-size:12px">${esc(linkFor(d))}</div>
        <div class="row"><button class="btn small" data-act="k-copylink">Copy link</button><button class="btn small" data-act="k-copyinvite">Copy invite</button>${d.phone?`<a class="btn small wa" href="${esc(waLink(d.phone,inviteText(d)))}" target="_blank" rel="noopener">Send invite on WhatsApp</a>`:""}${S.contractors[d.id]?`<button class="btn small danger" data-act="k-rotate">Replace link</button>`:""}</div>
-       <span class="hint">Anyone with this link can act as ${esc(d.name||"this contractor")}. If it's shared by mistake, press Replace link and send the new one. Pausing the contractor also stops the link working.</span></div>
+       <span class="hint">Anyone with this link can act as ${esc(d.name||"this contractor")}. If it's shared by mistake, press Replace link and send the new one. Pausing the contractor also stops the link working.</span>
+       ${S.contractors[d.id]&&d.phone?`<div class="row" style="border-top:1px solid var(--line);padding-top:8px"><a class="btn small wa" href="${esc(waLink(d.phone,detailsText(d)))}" target="_blank" rel="noopener">Ask to complete details on WhatsApp</a><button class="btn small" data-act="k-copydetails">Copy details request</button><span class="hint">${needsDetails(d)?"Bank details or agreement still missing.":"Details complete."}</span></div>`:""}</div>`}
      <div class="row"><button class="btn primary" data-act="k-save" ${S.canWrite?"":"disabled"}>Save contractor</button><button class="btn" data-act="k-cancel">Cancel</button>${S.contractors[d.id]?`<button class="btn danger" data-act="k-del" style="margin-left:auto">Delete</button>`:""}</div>
-   </div></div>`:`<div class="panel"><div class="panel-b"><p class="hint">Your maintenance people and companies. When you post a job, the ones who cover that trade are alerted, and the first to accept gets it.</p><button class="btn primary" data-act="k-new" ${S.canWrite&&S.db?"":"disabled"}>+ New contractor</button></div></div>`;
-  return `<div class="two"><div class="panel"><div class="panel-h"><h2>Contractors</h2><span class="hint">${list.filter(k=>k.active!==false).length} active</span></div>
-    <div class="tablewrap">${rows?`<table class="grid"><thead><tr><th>Name</th><th>Trades / areas</th><th>Mobile</th><th>Status</th><th class="r">Live / done</th></tr></thead><tbody>${rows}</tbody></table>`:'<div class="empty">No contractors yet. Add the people and firms you send work to.</div>'}</div></div>${form}</div>`;
+   </div></div>`:`<div class="panel"><div class="panel-b"><p class="hint">Your maintenance people and companies. When you post a job, the ones who cover that trade are alerted, and the first to accept gets it.</p><button class="btn primary" data-act="k-new" ${S.canWrite&&S.db?"":"disabled"}>+ New contractor</button></div></div>
+   <div class="panel"><div class="panel-h"><h2>Recruit contractors</h2></div><div class="panel-b">
+     <p class="hint">Send this sign-up link to trades you'd like on your team, or post it in WhatsApp groups. They fill in their own details, trades, bank and CIS info, and accept the self-billing agreement. Applications appear in the list for you to approve.</p>
+     <div class="mono" style="word-break:break-all;font-size:12px">${esc(joinLink())}</div>
+     <div class="row"><a class="btn small wa" href="https://wa.me/?text=${encodeURIComponent(joinText())}" target="_blank" rel="noopener">Share on WhatsApp</a><button class="btn small" data-act="k-copyjoin">Copy message</button><a class="btn small" href="/join" target="_blank" rel="noopener">Preview form</a></div>
+   </div></div>`;
+  return `<div class="two"><div class="panel"><div class="panel-h"><h2>Contractors</h2><span class="hint">${list.filter(k=>k.active!==false&&!k.pending).length} active</span>${pend?`<span class="pill d-open">${pend} new application${pend>1?"s":""}</span>`:""}</div>
+    <div class="tablewrap">${rows?`<table class="grid"><thead><tr><th>Name</th><th>Trades / areas</th><th>Mobile</th><th>Status</th><th class="r">Live / done</th></tr></thead><tbody>${rows}</tbody></table>`:'<div class="empty">No contractors yet. Add the people and firms you send work to, or share your sign-up link.</div>'}</div></div><div style="display:grid;gap:16px;align-content:start;min-width:0">${form}</div></div>`;
 }
 
 /* ---------- contacts ---------- */
@@ -861,6 +877,12 @@ document.addEventListener("click",async ev=>{
     /* contractors (office) */
     case "k-new":S.kDraft={id:S.db.collection("contractors").doc().id,token:newToken(),active:true,trades:[]};render();break;
     case "k-copylink":copy(linkFor(S.kDraft),"job link");break;
+    case "k-copydetails":copy(detailsText(S.kDraft),"details request");break;
+    case "k-copyjoin":copy(joinText(),"sign-up message");break;
+    case "k-approve":{const d=S.kDraft;if(!d.name||!d.phone){toast("Name and mobile are needed");break}
+      Object.assign(d,{pending:false,active:true,token:d.token||newToken(),approvedAt:new Date().toISOString()});
+      if(await write("contractors/"+d.id,d)){S.contractors[d.id]=clone(d);toast(d.name+" approved – send them their job link");render()}break}
+    case "k-reject":{try{await S.db.doc("contractors/"+S.kDraft.id).delete()}catch(e){}S.kDraft=null;toast("Application deleted");render();break}
 
     /* contractor payments */
     case "p-create":{const k=S.contractors[D(j).allocatedTo]||{};j.payout=newPayout(j);logEntry(`Self-bill ${j.payout.number} created for ${kName(D(j).allocatedTo)}`);S.touched.add("payout");

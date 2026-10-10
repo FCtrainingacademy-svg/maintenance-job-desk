@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Join our contractor team</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&family=Public+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="/static/app.css">
+</head><body>
+<div class="wrap" style="max-width:760px">
+  <header class="bar"><div class="brand"><h1 id="title">Join our contractor team</h1></div></header>
+  <div id="banner"></div>
+  <main id="main"><div class="empty">Loading…</div></main>
+</div>
+<div id="toast" class="toast" hidden></div>
+<script src="/static/details-form.js"></script>
+<script>
+(async function(){
+  const $=s=>document.querySelector(s);
+  let info={};
+  try{info=await (await fetch("/api/join/info")).json()}catch(e){}
+  if(info.bizName){$("#title").textContent="Join the "+info.bizName+" contractor team";document.title="Join "+info.bizName}
+  $("#main").innerHTML=`<p>We send property maintenance jobs to local trades: repairs, leaks, heating, drainage and more. Fill this in and we'll be in touch. When you're approved, you'll get a personal job link and WhatsApp alerts when work comes up.</p>`
+    +DetailsForm.html({categories:info.categories||[],agreement:info.agreement||"",mode:"join"});
+  DetailsForm.wire($("#main"),async data=>{
+    const r=await fetch("/api/join",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(data)});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(j.error||"Something went wrong – try again");
+    $("#main").innerHTML=`<div class="panel"><div class="panel-b"><h2>Thanks, application sent</h2><p>We'll review your details and message you on WhatsApp with your personal job link once you're approved.</p>${info.bizPhone?`<p class="hint">Questions? Call the office on <span class="mono">${DetailsForm.esc(info.bizPhone)}</span>.</p>`:""}</div></div>`;
+    window.scrollTo(0,0);
+  });
+})();
+</script>
+</body></html>
