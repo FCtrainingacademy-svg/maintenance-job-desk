@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Our rates</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&family=Public+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="/static/app.css">
+<style>
+.ratehead{display:grid;gap:6px;margin-bottom:16px}
+.ratehead h1{font-size:30px}
+table.grid td.r,table.grid th.r{text-align:right}
+.facts{display:grid;gap:8px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}
+.fact{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:10px 12px}
+.fact b{display:block;font-family:var(--f-display);font-size:20px}
+</style>
+</head><body>
+<div class="wrap" style="max-width:900px">
+  <div id="main"><div class="empty">Loading prices…</div></div>
+</div>
+<script>
+(async function(){
+  const esc=v=>String(v==null?"":v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  const num=v=>{const x=parseFloat(v);return isFinite(x)?x:null};
+  const gbp=v=>num(v)==null?"—":"£"+num(v).toLocaleString("en-GB",{minimumFractionDigits:num(v)%1?2:0,maximumFractionDigits:2});
+  const t12=t=>{const [h,m]=String(t||"0:0").split(":").map(Number);return (h%12||12)+(m?":"+String(m).padStart(2,"0"):"")+(h<12?"am":"pm")};
+  const mn=m=>{m=+m||0;return m%60?m+" minutes":(m/60)+" hour"+(m===60?"":"s")};
+  const main=document.getElementById("main");
+  let d;
+  try{const r=await fetch("/api/prices");d=await r.json();if(!r.ok)throw new Error(d.error)}
+  catch(e){main.innerHTML=`<div class="panel"><div class="empty">${esc(e.message||"Price list unavailable")}</div></div>`;return}
+  const b=d.biz,r=d.rates,vat=b.vatRegistered?` + VAT`:"";
+  document.title=(b.name?b.name+" – ":"")+"Our rates";
+  const band={day:"daytime",evening:"evening",night:"night"};
+  const co=r.callout||{},anyCo=num(co.day)||num(co.evening)||num(co.night);
+  main.innerHTML=`<div class="ratehead"><h1>${esc(b.name||"Property maintenance")} rates</h1>
+    <div class="hint">Prices per hour${vat}. ${esc(r.priceNote||"")}</div>
+    ${b.phone?`<div>Call <a class="mono" href="tel:${esc(b.phone.replace(/\s/g,""))}">${esc(b.phone)}</a>${b.email?` · <a href="mailto:${esc(b.email)}">${esc(b.email)}</a>`:""}</div>`:""}</div>
+  <div class="facts" style="margin-bottom:16px">
+    <div class="fact"><span class="hint">Minimum charge</span><b>${mn(r.minMins)}</b><span class="hint">then charged per ${mn(r.incMins).replace(/^1 /,"")}</span></div>
+    <div class="fact"><span class="hint">Call-out fee</span><b>${anyCo?`${gbp(co.day)} / ${gbp(co.evening)} / ${gbp(co.night)}`:"None"}</b><span class="hint">${anyCo?"day / evening / night":"you only pay for time on site"}</span></div>
+    <div class="fact"><span class="hint">Congestion / ULEZ / parking</span><b>${r.congestion==="included"&&r.parking==="included"?"Included":"May apply"}</b><span class="hint">${r.congestion==="charged"?"Congestion/ULEZ "+gbp(r.congestionFee)+" when applicable. ":""}${r.parking==="charged"?"Parking at cost.":""}</span></div>
+  </div>
+  <div class="panel"><div class="panel-h"><h2>Hourly rates</h2></div><div class="tablewrap"><table class="grid">
+    <thead><tr><th>Trade</th><th class="r">Daytime<br><span class="hint">${t12(r.dayStart)}–${t12(r.eveStart)}</span></th><th class="r">Evening<br><span class="hint">${t12(r.eveStart)}–${r.nightStart==="00:00"?"midnight":t12(r.nightStart)}</span></th><th class="r">Night<br><span class="hint">${r.nightStart==="00:00"?"midnight":t12(r.nightStart)}–${t12(r.dayStart)}</span></th></tr></thead>
+    <tbody>${r.trades.map(t=>`<tr><td>${esc(t.name)}</td><td class="r num">${gbp(t.day)}</td><td class="r num">${gbp(t.evening)}</td><td class="r num">${gbp(t.night)}</td></tr>`).join("")}</tbody></table></div>
+    <div class="panel-b"><p class="hint">Weekends are charged at the ${band[r.weekend]} rate and bank holidays at the ${band[r.bankHoliday]} rate, unless the visit already falls in a higher band.</p></div></div>
+  ${r.services.length?`<div class="panel" style="margin-top:16px"><div class="panel-h"><h2>Fixed-price services</h2></div><div class="tablewrap"><table class="grid">
+    <thead><tr><th>Service</th><th class="r">Daytime</th><th class="r">Out of hours</th></tr></thead>
+    <tbody>${r.services.map(s=>`<tr><td>${esc(s.name)}</td><td class="r num">${gbp(s.day)}</td><td class="r num">${num(s.evening)==null?"—":gbp(s.evening)}</td></tr>`).join("")}</tbody></table></div></div>`:""}
+  <div class="panel" style="margin-top:16px"><div class="panel-h"><h2>Other charges</h2></div><div class="panel-b"><ul style="margin:0;padding-left:18px">
+    <li>Parts and materials: charged at cost plus ${esc(b.markup)}% handling.</li>
+    <li>Collecting parts and materials: ${gbp(r.collectRate)} per hour.</li>
+    <li>No access / wasted visit (nobody home, keys not available): ${gbp(r.noAccessFee)}.</li>
+    ${b.vatRegistered?`<li>All prices exclude VAT at ${esc(b.vatRate)}%.</li>`:`<li>We are not VAT registered, so no VAT is added.</li>`}
+  </ul></div></div>`;
+})();
+</script>
+</body></html>

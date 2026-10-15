@@ -66,21 +66,109 @@ function copy(text,label){
   try{navigator.clipboard.writeText(text).then(done,fail)}catch(e){fail()}
 }
 
+/* ---------- rate card (pricing model) ---------- */
+const DEF_RATES={
+  dayStart:"07:00",eveStart:"18:00",nightStart:"00:00",weekend:"day",bankHoliday:"evening",
+  minMins:60,incMins:15,callout:{day:0,evening:0,night:0},
+  trades:[
+    {id:"plumbing",name:"Plumbing & leaks",cats:["Plumbing / leak"],day:90,evening:125,night:160},
+    {id:"heating",name:"Heating & gas",cats:["Heating / boiler","Gas safety (CP12)"],day:95,evening:135,night:175},
+    {id:"electrical",name:"Electrical",cats:["Electrical"],day:85,evening:120,night:160},
+    {id:"drainage",name:"Drainage & blockages",cats:["Drainage / blockage"],day:105,evening:145,night:175},
+    {id:"carpentry",name:"Carpentry, doors & locks",cats:["Carpentry / doors / locks"],day:80,evening:110,night:160},
+    {id:"roofing",name:"Roofing & gutters",cats:["Roofing / gutters"],day:80,evening:110,night:160},
+    {id:"building",name:"Building, plastering, damp & decorating",cats:["Damp & mould","Decorating"],day:70,evening:95,night:150},
+    {id:"appliance",name:"Appliances",cats:["Appliance"],day:85,evening:115,night:150},
+    {id:"handyman",name:"Handyman & general repairs",cats:["General repair","Other"],day:60,evening:85,night:130}],
+  services:[
+    {id:"cp12",name:"Gas safety certificate (CP12)",day:85,evening:115},
+    {id:"boilerservice",name:"Boiler service",day:85,evening:115},
+    {id:"cp12service",name:"Gas safety certificate + boiler service",day:140,evening:185},
+    {id:"eicr",name:"Electrical safety report (EICR) – up to 2-bed",day:150,evening:""},
+    {id:"leak",name:"Leak detection",day:120,evening:""},
+    {id:"drainsurvey",name:"Drain CCTV survey",day:180,evening:""},
+    {id:"alarms",name:"Smoke & CO alarm check (per property)",day:45,evening:""},
+    {id:"disposal",name:"Appliance disposal (per item)",day:60,evening:60}],
+  noAccessFee:60,collectRate:50,congestion:"included",congestionFee:18,parking:"included",
+  contractorShare:60,publish:false,priceNote:"Prices include travel and are charged per 15 minutes after the first hour. Materials charged at cost plus a handling fee."
+};
+const BANK_HOLIDAYS=["2026-01-01","2026-04-03","2026-04-06","2026-05-04","2026-05-25","2026-08-31","2026-12-25","2026-12-28",
+  "2027-01-01","2027-03-26","2027-03-29","2027-05-03","2027-05-31","2027-08-30","2027-12-27","2027-12-28"];
+const BANDS=[["day","Daytime"],["evening","Evening"],["night","Night"]];
+const BLABEL=Object.fromEntries(BANDS);
+const R=()=>S.rates||DEF_RATES;
+const mins=t=>{const [h,m]=String(t||"0:0").split(":").map(Number);return (h||0)*60+(m||0)};
+function bandFor(iso){
+  if(!iso)return {band:"day",why:"no visit time yet"};
+  const d=new Date(iso);if(isNaN(d))return {band:"day",why:""};
+  const r=R(),ds=d.toISOString().slice(0,10),local=new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);
+  // day = [dayStart, eveStart), evening = [eveStart, nightStart) (night start 00:00 means midnight), night = the rest
+  const t=d.getHours()*60+d.getMinutes(),dayS=mins(r.dayStart),eveS=mins(r.eveStart);
+  let nS=mins(r.nightStart);if(nS===0)nS=1440;
+  const inEvening=nS>eveS?(t>=eveS&&t<nS):(t>=eveS||t<nS);
+  let band=(t>=dayS&&t<eveS)?"day":(inEvening?"evening":"night");
+  const wk=[0,6].includes(d.getDay()),bh=BANK_HOLIDAYS.includes(local)||BANK_HOLIDAYS.includes(ds);
+  const order={day:0,evening:1,night:2};
+  let why=fmtDT(iso);
+  if(bh&&order[r.bankHoliday]>order[band]){band=r.bankHoliday;why+=" · bank holiday"}
+  else if(wk&&order[r.weekend]>order[band]){band=r.weekend;why+=" · weekend"}
+  return {band,why};
+}
+function tradeFor(j){const r=R(),p=j.pricing||{};return r.trades.find(t=>t.id===p.tradeId)||r.trades.find(t=>(t.cats||[]).includes(j.category))||r.trades[r.trades.length-1]}
+function visitStart(j){return (j.track&&j.track.onsite)||j.scheduledAt||j.attendBy||""}
+function timeOnSite(j){const t=j.track||{};if(t.onsite&&t.done){const m=Math.round((new Date(t.done)-new Date(t.onsite))/60000);if(m>0&&m<24*60)return m}return null}
+const fmtMins=m=>{m=Math.round(m);const h=Math.floor(m/60),r=m%60;return (h?h+" hr"+(h>1?"s":""):"")+(h&&r?" ":"")+(r?r+" min":"")||"0 min"};
+// Pricing lines for the labour side of a job (rate card or fixed price). Manual jobs use the old call-out + labour lines.
+function priceInfo(j){
+  const p=j.pricing||{},r=R();
+  if(!p.mode||p.mode==="manual")return null;
+  const auto=bandFor(visitStart(j)),band=p.band&&p.band!=="auto"?p.band:auto.band;
+  const L=[];let note="";
+  const ex=p.extras||{};
+  if(ex.noAccess){L.push({d:"Wasted visit – no access to property",q:1,u:n(r.noAccessFee)});return {lines:L,band,why:auto.why,note:"No-access fee replaces labour",billable:0,actual:null}}
+  if(p.mode==="fixed"){
+    const s=r.services.find(x=>x.id===p.serviceId);
+    if(s){const price=band==="day"||s.evening===""||s.evening==null?n(s.day):n(s.evening);L.push({d:s.name+(band!=="day"&&s.evening!==""&&s.evening!=null?" (out of hours)":""),q:1,u:price})}
+    else note="Choose a fixed-price service";
+  } else {
+    const t=tradeFor(j),rate=n(t[band]);
+    const actual=p.minutes!==""&&p.minutes!=null?n(p.minutes):timeOnSite(j);
+    const base=actual==null?n(r.minMins):actual;
+    const billable=Math.max(n(r.minMins),Math.ceil(base/Math.max(1,n(r.incMins)))*n(r.incMins));
+    const co=n((r.callout||{})[band]);
+    if(co)L.push({d:BLABEL[band]+" call-out",q:1,u:co});
+    L.push({d:`${t.name} – ${BLABEL[band].toLowerCase()} rate (${fmtMins(billable)}${actual==null?" minimum":""})`,q:Math.round(billable/60*100)/100,u:rate,unit:"hr"});
+    note=actual==null?`Charging the ${fmtMins(r.minMins)} minimum until time on site is known`:`Time on site ${fmtMins(actual)}, billed as ${fmtMins(billable)}`;
+    var info={billable,actual,rate,trade:t};
+  }
+  if(n(ex.collectMins))L.push({d:`Collecting materials (${fmtMins(n(ex.collectMins))})`,q:Math.round(n(ex.collectMins)/60*100)/100,u:n(r.collectRate),unit:"hr"});
+  if(ex.congestion&&r.congestion==="charged")L.push({d:"Congestion / ULEZ charge",q:1,u:n(r.congestionFee)});
+  if(n(ex.parking)&&r.parking==="charged")L.push({d:"Parking",q:1,u:n(ex.parking)});
+  return Object.assign({lines:L,band,why:auto.why,note},info||{});
+}
+function suggestedFee(j){
+  const pi=priceInfo(j);if(!pi)return null;
+  const lab=pi.lines.reduce((a,l)=>a+l.q*l.u,0);
+  return Math.round(lab*n(R().contractorShare)/100);
+}
+
 /* ---------- money ---------- */
 function calc(j){
   const st=S.settings;const mk=j.markup!=null&&j.markup!==""?n(j.markup):n(st.markup);
   const mats=(j.materials||[]).filter(m=>m.chargeable!==false);
   const matCost=mats.reduce((a,m)=>a+n(m.qty)*n(m.unit),0);
   const matCharge=matCost*(1+mk/100);
-  const labour=(j.labour||[]).reduce((a,l)=>a+n(l.hours)*n(l.rate),0);
-  const callout=n(j.callout);
+  const pi=priceInfo(j);
+  const labour=pi?pi.lines.reduce((a,l)=>a+l.q*l.u,0):(j.labour||[]).reduce((a,l)=>a+n(l.hours)*n(l.rate),0);
+  const callout=pi?0:n(j.callout);
   const net=matCharge+labour+callout;
   const vat=st.vatRegistered?net*n(st.vatRate)/100:0;
   const sub=j.dispatch&&j.dispatch.allocatedTo?n(j.dispatch.agreedPrice):0;
   return {mk,matCost,matCharge,labour,callout,net,vat,total:net+vat,sub,margin:net-sub-matCost};
 }
 function invLines(j){
-  const c=calc(j);const L=[];
+  const c=calc(j);const L=[];const pi=priceInfo(j);
+  if(pi){pi.lines.forEach(l=>L.push(l));(j.materials||[]).forEach(m=>{if(m.chargeable!==false&&n(m.qty)*n(m.unit))L.push({d:m.item||"Materials",q:n(m.qty),u:n(m.unit)*(1+c.mk/100)})});return L}
   if(c.callout)L.push({d:(j.priority==="emergency"?"Out-of-hours emergency call-out":"Call-out / attendance"),q:1,u:c.callout});
   (j.labour||[]).forEach(l=>{if(n(l.hours)*n(l.rate))L.push({d:"Labour – "+(l.desc||"works"),q:n(l.hours),u:n(l.rate),unit:"hr"})});
   (j.materials||[]).forEach(m=>{if(m.chargeable!==false&&n(m.qty)*n(m.unit))L.push({d:m.item||"Materials",q:n(m.qty),u:n(m.unit)*(1+c.mk/100)})});
@@ -280,7 +368,7 @@ function viewDispatch(j){
   return `<div class="g2">
      <div class="callout"><b style="font-size:13px">How will they be paid?</b>
        <div class="choice"><label><input type="radio" name="dmode" data-path="dispatch.mode" value="flat" ${mode==="flat"?"checked":""}> Fixed fee – first to accept</label><label><input type="radio" name="dmode" data-path="dispatch.mode" value="quote" ${mode==="quote"?"checked":""}> Ask for quotes – I choose</label></div>
-       ${mode==="flat"?`<label class="f"><span>Fee you'll pay the contractor £</span><input type="number" step="0.01" min="0" data-path="dispatch.fee" value="${esc(d.fee)}"></label>`
+       ${mode==="flat"?`<label class="f"><span>Fee you'll pay the contractor £</span><input type="number" step="0.01" min="0" data-path="dispatch.fee" value="${esc(d.fee)}"></label>${suggestedFee(j)!=null?`<div class="row"><span class="hint">Suggested ${gbp(suggestedFee(j))} = ${R().contractorShare}% of the labour charge</span><button class="btn small" data-act="o-usefee">Use</button></div>`:""}`
          :`<label class="f"><span>Quotes needed by</span><input type="datetime-local" data-path="dispatch.respondBy" value="${esc(d.respondBy)}"></label>`}
        <p class="hint">${mode==="flat"?"Best for emergencies and known jobs (call-out, unblock, service). The first contractor to tap Accept gets it.":"Best for bigger or unclear work. Each contractor sends a price, attend time and finish time; you pick one."}</p></div>
      <div class="callout"><b style="font-size:13px">Send to</b>
@@ -420,12 +508,14 @@ function viewSheet(){
    </section>
 
    <section class="sec">
-     <div class="sec-h"><span class="n">9</span><h3>Charges to client</h3><div class="act"><button class="btn small" data-act="add-row" data-list="labour">+ Labour</button></div></div>
+     <div class="sec-h"><span class="n">9</span><h3>Charges to client</h3>${(j.pricing||{}).mode==="manual"||!(j.pricing||{}).mode?`<div class="act"><button class="btn small" data-act="add-row" data-list="labour">+ Labour</button></div>`:""}</div>
+     <div class="choice">${[["rate","Rate card – time on site"],["fixed","Fixed-price service"],["manual","Manual / quote"]].map(([v,l])=>`<label><input type="radio" name="pmode" data-path="pricing.mode" value="${v}" ${((j.pricing||{}).mode||"manual")===v?"checked":""}> ${l}</label>`).join("")}</div>
+     ${pricingHTML(j)}
      <div class="g">
-       <label class="f"><span>Call-out charge £</span><input type="number" min="0" step="0.01" data-path="callout" value="${esc(j.callout)}"></label>
+       ${(j.pricing||{}).mode==="manual"||!(j.pricing||{}).mode?`<label class="f"><span>Call-out charge £</span><input type="number" min="0" step="0.01" data-path="callout" value="${esc(j.callout)}"></label>`:""}
        <label class="f"><span>Materials markup %</span><input type="number" min="0" step="1" data-path="markup" value="${esc(j.markup)}" placeholder="${esc(S.settings.markup)} (default)"></label>
      </div>
-     ${lab?`<div class="tablewrap"><table class="lines"><thead><tr><th>Work done</th><th>Hours</th><th>Rate £/hr</th><th class="r">Line</th><th></th></tr></thead><tbody>${lab}</tbody></table></div>`:""}
+     ${((j.pricing||{}).mode==="manual"||!(j.pricing||{}).mode)&&lab?`<div class="tablewrap"><table class="lines"><thead><tr><th>Work done</th><th>Hours</th><th>Rate £/hr</th><th class="r">Line</th><th></th></tr></thead><tbody>${lab}</tbody></table></div>`:""}
      <div class="totals" id="totals">${totalsHTML(c)}</div>
    </section>
 
@@ -569,10 +659,34 @@ function viewPayments(){
    <p class="hint">Self-billing needs a written agreement with each contractor. CIS deductions must be paid to HMRC monthly and shown on each contractor's statement. Check the setup with your accountant.</p></div>`;
 }
 
+function pricingSummary(j){
+  const p=j.pricing||{},pi=priceInfo(j),r=R();if(!pi)return "As quoted";
+  if(p.mode==="fixed"){const sv=r.services.find(x=>x.id===p.serviceId);return sv?`Fixed price: ${sv.name}`:"Fixed price"}
+  return `${tradeFor(j).name}, ${BLABEL[pi.band].toLowerCase()} rate ${gbp(tradeFor(j)[pi.band])}/hr – minimum ${fmtMins(r.minMins)}, then ${r.incMins}-minute blocks. Record arrival and finish times.`;
+}
+function pricingHTML(j){
+  const p=j.pricing||{},r=R();
+  if(!p.mode||p.mode==="manual")return `<p class="hint">Enter your own call-out and labour lines, e.g. for a quoted job. Switch to the rate card to price by time on site.</p>`;
+  const pi=priceInfo(j),ex=p.extras||{},auto=bandFor(visitStart(j));
+  const bandSel=`<label class="f"><span>Time band</span><select data-path="pricing.band">${opts([["auto",`Automatic – ${BLABEL[auto.band]}`]].concat(BANDS),p.band||"auto")}</select></label>`;
+  const top=p.mode==="fixed"
+    ?`<div class="g"><label class="f"><span>Service</span><select data-path="pricing.serviceId">${opts(r.services.map(s=>[s.id,`${s.name} – ${gbp(s.day)}${s.evening!==""&&s.evening!=null?" / OOH "+gbp(s.evening):""}`]),p.serviceId,"Choose…")}</select></label>${bandSel}</div>`
+    :`<div class="g"><label class="f"><span>Trade rate</span><select data-path="pricing.tradeId">${opts(r.trades.map(t=>[t.id,`${t.name} – ${gbp(t.day)} / ${gbp(t.evening)} / ${gbp(t.night)}`]),tradeFor(j).id)}</select></label>${bandSel}
+       <label class="f"><span>Time on site (minutes)</span><input type="number" min="0" step="5" data-path="pricing.minutes" value="${esc(p.minutes)}" placeholder="${timeOnSite(j)!=null?timeOnSite(j)+" (from contractor)":"auto from on site → complete"}"></label></div>`;
+  const extras=`<div class="row" style="gap:6px 16px">
+      <label class="row" style="gap:6px"><input type="checkbox" data-path="pricing.extras.noAccess" ${ex.noAccess?"checked":""}> No access / wasted visit (${gbp(r.noAccessFee)})</label>
+      <label class="row" style="gap:6px">Collecting materials <input type="number" min="0" step="15" data-path="pricing.extras.collectMins" value="${esc(ex.collectMins)}" style="width:80px" placeholder="min"> min</label>
+      ${r.congestion==="charged"?`<label class="row" style="gap:6px"><input type="checkbox" data-path="pricing.extras.congestion" ${ex.congestion?"checked":""}> Congestion / ULEZ (${gbp(r.congestionFee)})</label>`:""}
+      ${r.parking==="charged"?`<label class="row" style="gap:6px">Parking £ <input type="number" min="0" step="0.01" data-path="pricing.extras.parking" value="${esc(ex.parking)}" style="width:90px"></label>`:""}</div>`;
+  const lines=pi&&pi.lines.length?`<div class="tablewrap"><table class="lines"><thead><tr><th>Charge</th><th class="r">Qty</th><th class="r">Rate</th><th class="r">Line</th></tr></thead><tbody>${pi.lines.map(l=>`<tr><td>${esc(l.d)}</td><td class="r num">${l.q}${l.unit?" "+l.unit:""}</td><td class="r num">${gbp(l.u)}</td><td class="r num">${gbp(l.q*l.u)}</td></tr>`).join("")}</tbody></table></div>`:"";
+  return `${top}
+    <p class="hint"><b>${BLABEL[pi?pi.band:auto.band]} rate</b> – visit ${esc(auto.why)}${pi&&pi.note?" · "+esc(pi.note):""}. ${p.mode==="rate"?`Minimum ${fmtMins(r.minMins)}, then ${r.incMins}-minute blocks.`:""}</p>
+    ${extras}${lines}`;
+}
 function totalsHTML(c){
   return `<span>Materials (cost ${gbp(c.matCost)} + ${c.mk}%)</span><span>${gbp(c.matCharge)}</span>
-   <span>Labour</span><span>${gbp(c.labour)}</span>
-   <span>Call-out</span><span>${gbp(c.callout)}</span>
+   <span>Labour &amp; charges</span><span>${gbp(c.labour)}</span>
+   ${c.callout?`<span>Call-out</span><span>${gbp(c.callout)}</span>`:""}
    ${S.settings.vatRegistered?`<span>Net</span><span>${gbp(c.net)}</span><span>VAT ${esc(S.settings.vatRate)}%</span><span>${gbp(c.vat)}</span>`:""}
    <span class="big">Client total</span><span class="big">${gbp(c.total)}</span>
    ${c.sub?`<span class="m">Less contractor</span><span class="m">−${gbp(c.sub)}</span><span class="m">Less materials cost</span><span class="m">−${gbp(c.matCost)}</span><span><b>Your margin</b></span><span><b>${gbp(c.margin)}</b></span>`:""}`;
@@ -600,7 +714,7 @@ function jobSheetDoc(j){
   const res=(j.residents||[]).map(r=>`<tr><td>${esc(r.name)}</td><td>${esc(r.phone)}</td><td>${esc(r.notes)}</td></tr>`).join("");
   const mats=(j.materials||[]).map(m=>`<tr><td>${esc(m.item)}</td><td class="r">${esc(m.qty)}</td><td>${esc(m.supplier)}</td><td>${esc({need:"To order",ordered:"Ordered",have:"On van",used:"Fitted"}[m.state||"need"])}</td></tr>`).join("");
   const body=`<div class="top"><div><h1>Job sheet ${esc(j.ref)}</h1><div class="muted">${bizBlock().map(esc).join(" · ")}</div></div><div class="r"><b>${esc(PLABEL[j.priority]||"")}</b><br>${esc(SLABEL[j.status]||"")}</div></div>
-   <h2>Job</h2>${kv([["Category",j.category],["Description",j.description],["Contractor",d.allocatedTo?kName(d.allocatedTo):j.engineer],["Client order / PO",i.ref]])}
+   <h2>Job</h2>${kv([["Category",j.category],["Description",j.description],["Contractor",d.allocatedTo?kName(d.allocatedTo):j.engineer],["Client order / PO",i.ref],["Pricing",pricingSummary(j)]])}
    <h2>Timeframe</h2>${kv([["Reported",fmtDT(j.reportedAt)],["Attend by",fmtDT(d.contractorAttendBy||j.attendBy)],["Booked for",j.scheduledAt?fmtDT(j.scheduledAt):""],["Expected finish",d.contractorFinishBy?fmtDT(d.contractorFinishBy):""]])}
    <h2>Property &amp; access</h2>${kv([["Address",[p.address,p.postcode].filter(Boolean).join(", ")],["Property type",p.type],["Access",p.access],["Key safe / key ref",p.keyInfo],["Access notes",p.accessNotes],["Parking",p.parking],["Stopcock / meters",p.stopcock]])}
    <h2>Residents</h2>${res?`<table><tr><th>Name</th><th>Number</th><th>Notes</th></tr>${res}</table>`:'<p class="muted">None recorded</p>'}
@@ -735,6 +849,39 @@ function viewInvoices(){
    <div class="tablewrap">${rows?`<table class="grid"><thead><tr><th>No.</th><th>Bill to</th><th>Issued</th><th>Due</th><th>Status</th><th class="r">Total</th></tr></thead><tbody>${rows}</tbody></table>`:'<div class="empty">No invoices issued yet. Complete a job, then press <b>Issue invoice</b> on its job sheet.</div>'}</div></div></div>`;
 }
 
+/* ---------- rate card settings ---------- */
+function viewRateCard(){
+  const r=R(),vat=S.settings.vatRegistered?" ex VAT":"";
+  const num=(path,v,w)=>`<input type="number" min="0" step="0.01" data-rpath="${path}" value="${esc(v)}" style="width:${w||90}px">`;
+  const trades=r.trades.map((t,i)=>`<tr><td><input data-rpath="trades.${i}.name" value="${esc(t.name)}"><div class="hint">${esc((t.cats||[]).join(", ")||"—")}</div></td><td>${num(`trades.${i}.day`,t.day)}</td><td>${num(`trades.${i}.evening`,t.evening)}</td><td>${num(`trades.${i}.night`,t.night)}</td></tr>`).join("");
+  const svcs=r.services.map((v,i)=>`<tr><td><input data-rpath="services.${i}.name" value="${esc(v.name)}"></td><td>${num(`services.${i}.day`,v.day)}</td><td>${num(`services.${i}.evening`,v.evening)}<div class="hint">blank = daytime only</div></td><td><button class="btn small danger" data-act="r-delsvc" data-i="${i}" aria-label="Remove service">✕</button></td></tr>`).join("");
+  const tm=(k,l)=>`<label class="f"><span>${l}</span><input type="time" data-rpath="${k}" value="${esc(r[k])}"></label>`;
+  const sel=(k,l,o)=>`<label class="f"><span>${l}</span><select data-rpath="${k}">${opts(o,r[k])}</select></label>`;
+  return `<div class="panel" style="max-width:860px;margin-top:16px"><div class="panel-h"><h2>Rate card</h2><span class="hint">How jobs are priced${vat}. Suggested starting rates are about 25–30% under the big London firms.</span>${S.ratesDirty?'<span class="pill d-open">Unsaved</span>':""}</div>
+  <div class="panel-b">
+    <h3 style="font-size:15px">Time bands</h3>
+    <div class="g">${tm("dayStart","Daytime starts")}${tm("eveStart","Evening starts")}${tm("nightStart","Night starts")}
+      ${sel("weekend","Weekends charged at",BANDS.map(b=>[b[0],b[1]+" rate"]))}${sel("bankHoliday","Bank holidays charged at",BANDS.map(b=>[b[0],b[1]+" rate"]))}</div>
+    <div class="g"><label class="f"><span>Minimum charge (minutes)</span>${num("minMins",r.minMins)}</label><label class="f"><span>Then billed in blocks of (minutes)</span><select data-rpath="incMins">${opts([[15,"15 minutes"],[30,"30 minutes"],[60,"1 hour"]],r.incMins)}</select></label>
+      <label class="f"><span>Call-out fee – day / evening / night £</span><span class="row" style="gap:4px">${num("callout.day",r.callout.day,70)}${num("callout.evening",r.callout.evening,70)}${num("callout.night",r.callout.night,70)}</span></label></div>
+    <p class="hint">Most big London firms charge no call-out fee, only time on site with a 1-hour minimum. Add a call-out fee here if you prefer the "first hour + call-out" model.</p>
+    <h3 style="font-size:15px">Hourly rates by trade (£ per hour${vat})</h3>
+    <div class="tablewrap"><table class="lines"><thead><tr><th>Trade</th><th>Daytime</th><th>Evening</th><th>Night</th></tr></thead><tbody>${trades}</tbody></table></div>
+    <h3 style="font-size:15px">Fixed-price services (£${vat})</h3>
+    <div class="tablewrap"><table class="lines"><thead><tr><th>Service</th><th>Daytime</th><th>Out of hours</th><th></th></tr></thead><tbody>${svcs}</tbody></table></div>
+    <div><button class="btn small" data-act="r-addsvc">+ Fixed-price service</button></div>
+    <h3 style="font-size:15px">Other charges</h3>
+    <div class="g"><label class="f"><span>No access / wasted visit £</span>${num("noAccessFee",r.noAccessFee)}</label><label class="f"><span>Collecting materials £/hr</span>${num("collectRate",r.collectRate)}</label>
+      ${sel("congestion","Congestion / ULEZ",[["included","Included in our rates"],["charged","Charged when applicable"]])}${r.congestion==="charged"?`<label class="f"><span>Congestion/ULEZ fee £</span>${num("congestionFee",r.congestionFee)}</label>`:""}
+      ${sel("parking","Parking",[["included","Included in our rates"],["charged","Charged at cost"]])}</div>
+    <div class="g"><label class="f"><span>Contractor fee suggestion – % of labour charge</span>${num("contractorShare",r.contractorShare)}</label><label class="f"><span>Materials markup %</span><input type="number" data-spath="markup" value="${esc(S.settings.markup)}"><span class="hint">Saved with the business settings above</span></label></div>
+    <label class="f"><span>Note shown on your public price list</span><textarea data-rpath="priceNote" style="min-height:50px">${esc(r.priceNote)}</textarea></label>
+    <div class="row"><label class="row" style="gap:6px;font-weight:600"><input type="checkbox" data-rpath="publish" ${r.publish?"checked":""}> Publish price list</label>
+      ${r.publish?`<a class="btn small" href="/prices" target="_blank" rel="noopener">Open price list</a><button class="btn small" data-act="r-copyprices">Copy link</button><a class="btn small wa" href="https://wa.me/?text=${encodeURIComponent("Our maintenance rates: "+(S.baseUrl||location.origin)+"/prices")}" target="_blank" rel="noopener">Share on WhatsApp</a>`:'<span class="hint">Turn on to get a shareable rates page for agents and landlords.</span>'}</div>
+    <div class="row"><button class="btn primary" data-act="r-save" ${S.canWrite?"":"disabled"}>Save rate card</button><button class="btn" data-act="r-reset">Reset to suggested rates</button></div>
+  </div></div>`;
+}
+
 /* ---------- settings ---------- */
 function viewSettings(){
   const s=S.settings;
@@ -749,6 +896,7 @@ function viewSettings(){
    ${f("footer","Invoice footer")}
    <div class="row"><button class="btn primary" data-act="s-save" ${S.canWrite&&S.db?"":"disabled"}>Save settings</button><span class="hint">New jobs pick up the call-out and labour rate from here.</span></div>
   </div></div>
+  ${viewRateCard()}
   <div class="panel" style="max-width:860px;margin-top:16px"><div class="panel-h"><h2>WhatsApp messages</h2>
     ${S.wa&&S.wa.enabled?'<span class="pill d-allocated">Connected</span>':'<span class="pill d-open">Not connected – messages are logged, not sent</span>'}</div>
   <div class="panel-b">
@@ -814,7 +962,7 @@ document.addEventListener("click",async ev=>{
       if(S.dirty){toast("Save or discard changes first");break}
       const ref=S.db.collection("jobs").doc();const now=nowLocal();
       const job={id:ref.id,ref:nextRef("PM-",x=>x.ref),status:"new",priority:"routine",category:"",description:"",reportedAt:now,attendBy:addHours(now,168),
-        property:{},residents:[{name:"",phone:""}],issuer:{},billSame:true,materials:[],labour:[{desc:"",hours:1,rate:S.settings.labourRate}],callout:S.settings.calloutDay,
+        property:{},residents:[{name:"",phone:""}],issuer:{},billSame:true,materials:[],labour:[],callout:0,pricing:{mode:"rate",band:"auto",extras:{}},
         dispatch:{mode:"flat",sendTo:"all",fee:""},log:[{at:nowISO(),text:"Job logged"}],createdAt:nowISO()};
       S.jobs[job.id]=job;S.sel=job.id;S.draft=clone(job);S.dirty=true;S.touched=new Set();S.filter="open";render();
       const first=document.querySelector('[data-path="description"]');if(first)first.focus();break}
@@ -858,6 +1006,7 @@ document.addEventListener("click",async ev=>{
       S.touched.add("dispatch");
       const ok=await (async()=>{const out=clone(j);out.updatedAt=now;if(await write("jobs/"+j.id,out)){S.jobs[j.id]=clone(out);S.dirty=false;S.touched=new Set();return true}return false})();
       if(ok){render();await notify(`/api/jobs/${j.id}/notify-post`,{},"Job alert");S.db.refresh()}break}
+    case "o-usefee":{j.dispatch=j.dispatch||{};j.dispatch.fee=suggestedFee(j);markDirty("dispatch");render();break}
     case "o-resend":await notify(`/api/jobs/${j.id}/notify-post`,{},"Job alert");break;
     case "o-withdraw":await officeUpdate({dispatch:{status:"withdrawn"}},"Post withdrawn");break;
     case "o-pick":{const kid=t.dataset.k,q=(j.quotes||{})[kid]||{},now=nowISO();
@@ -903,6 +1052,11 @@ document.addEventListener("click",async ev=>{
     case "c-cancel":S.cDraft=null;render();break;
     case "c-save":{const d=S.cDraft;if(!d.name){toast("Add a name");break}if(await write("contacts/"+d.id,d)){toast("Contact saved");S.cDraft=null;render()}break}
     case "c-del":{try{await S.db.doc("contacts/"+S.cDraft.id).delete()}catch(e){}S.cDraft=null;toast("Contact deleted");render();break}
+    case "r-save":{if(await write("settings/rates",S.rates)){S.ratesDirty=false;toast("Rate card saved");render()}break}
+    case "r-reset":S.rates=clone(DEF_RATES);S.ratesDirty=true;toast("Suggested rates loaded – press Save rate card to keep them");render();break;
+    case "r-addsvc":S.rates.services.push({id:"svc"+Date.now().toString(36),name:"",day:"",evening:""});S.ratesDirty=true;render();break;
+    case "r-delsvc":S.rates.services.splice(+t.dataset.i,1);S.ratesDirty=true;render();break;
+    case "r-copyprices":copy((S.baseUrl||location.origin)+"/prices","price list link");break;
     case "s-save":{const ok=await write("settings/business",S.settings);if(ok)toast("Settings saved");break}
   }
 });
@@ -920,6 +1074,10 @@ function onField(ev){
   const p=el.dataset.path,old=getPath(S.draft,p);
   setPath(S.draft,p,el.type==="checkbox"?el.checked:el.value);markDirty(p);
   if(p==="dispatch.mode"||p==="dispatch.sendTo"){render();return}
+  if(p.startsWith("pricing.")){
+    if(el.type==="number"&&el.value!=="")setPath(S.draft,p,n(el.value));
+    if(ev.type==="change"||el.type==="checkbox"||el.type==="radio"||el.tagName==="SELECT"){render();return}
+    const tt=$("#totals");if(tt)tt.innerHTML=totalsHTML(calc(S.draft));return}
   if(p.startsWith("payout.")){const pt=$("#paytotals");if(pt)pt.innerHTML=payTotalsHTML(payCalc(S.draft.payout),S.draft.payout);return}
   if(p==="status"&&old!==el.value){logEntry("Status: "+(SLABEL[old]||old)+" → "+SLABEL[el.value]);if(el.value==="complete"&&!S.draft.completedAt)S.draft.completedAt=nowLocal();render();return}
   if(p==="priority"){const pr=PRIORITIES.find(x=>x[0]===el.value);S.draft.attendBy=addHours(S.draft.reportedAt||nowLocal(),pr[2]);
@@ -931,13 +1089,16 @@ function onField(ev){
     const row=el.closest("tr");if(row){const i=+p.split(".")[1];const L=p.split(".")[0];const x=S.draft[L][i];const cell=row.querySelector("td.r");if(cell)cell.textContent=gbp(L==="materials"?n(x.qty)*n(x.unit):n(x.hours)*n(x.rate))}
     const tt=$("#totals");if(tt)tt.innerHTML=totalsHTML(calc(S.draft));}
 }
-document.addEventListener("input",ev=>{if(ev.target.tagName!=="SELECT"&&ev.target.type!=="checkbox"&&ev.target.type!=="radio")onField(ev)});
+document.addEventListener("input",ev=>{if(ev.target.dataset&&ev.target.dataset.rpath){onRate(ev.target,false);return}if(ev.target.tagName!=="SELECT"&&ev.target.type!=="checkbox"&&ev.target.type!=="radio")onField(ev)});
+function onRate(el,changed){const v=el.type==="checkbox"?el.checked:(el.type==="number"?(el.value===""?"":n(el.value)):el.value);setPath(S.rates,el.dataset.rpath,v);S.ratesDirty=true;if(changed&&(el.tagName==="SELECT"||el.type==="checkbox"))render()}
 document.addEventListener("change",ev=>{
   const el=ev.target;
   if(el.id==="pickIssuer"||el.id==="pickBill"){const k=S.contacts[el.value];if(!k)return;const key=el.id==="pickIssuer"?"issuer":"bill";
     S.draft[key]=Object.assign({},S.draft[key],{contactId:k.id,name:k.name||"",role:k.role||"",company:k.company||"",phone:k.phone||"",email:k.email||"",address:k.address||""});markDirty(key);render();return}
   if(el.id==="billSame"){S.draft.billSame=el.checked;if(!el.checked&&!S.draft.bill)S.draft.bill={};markDirty("billSame");render();return}
   if(el.id==="manualK"||el.id==="manualPrice")return;
+  if(el.dataset.path&&el.dataset.path.startsWith("pricing.")&&el.type==="number"){render();return}
+  if(el.dataset.rpath){onRate(el,true);return}
   if(el.tagName==="SELECT"||el.type==="checkbox"||el.type==="radio")onField(ev);
 });
 window.addEventListener("beforeunload",e=>{if(S.dirty){e.preventDefault();e.returnValue=""}});
@@ -979,6 +1140,7 @@ S.db=makeDb();
 S.db.on(all=>{
   S.contractors=byId(all.contractors);S.contacts=byId(all.contacts);
   const set=(all.settings||[]).find(d=>d.id==="business");if(set&&!(S.tab==="settings"&&editing()))S.settings=Object.assign({},DEF_SET,set);
+  const rt=(all.settings||[]).find(d=>d.id==="rates");if(!S.ratesDirty)S.rates=rt?Object.assign(clone(DEF_RATES),rt):clone(DEF_RATES);
   const m=byId(all.jobs);
   if(S.sel&&S.dirty&&!m[S.sel]&&S.jobs[S.sel])m[S.sel]=S.jobs[S.sel];
   S.jobs=m;S.loaded.jobs=true;

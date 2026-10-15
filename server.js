@@ -131,6 +131,16 @@ cr.post("/profile", wrap(async (req, res) => {
 }));
 app.use("/api/c/:token", cr);
 
+/* ---------- public price list ---------- */
+app.get("/prices", (_req, res) => res.sendFile(pub("prices.html")));
+app.get("/api/prices", wrap(async (_req, res) => {
+  const r = await store.get("settings", "rates"), s = (await store.get("settings", "business")) || {};
+  if (!r || !r.publish) return res.status(404).json({ error: "Our price list isn't published yet. Please call the office for a quote." });
+  const pick = ({ dayStart, eveStart, nightStart, weekend, bankHoliday, minMins, incMins, callout, trades, services, noAccessFee, collectRate, congestion, congestionFee, parking, priceNote }) =>
+    ({ dayStart, eveStart, nightStart, weekend, bankHoliday, minMins, incMins, callout, trades: (trades || []).map(({ name, day, evening, night }) => ({ name, day, evening, night })), services: (services || []).map(({ name, day, evening }) => ({ name, day, evening })), noAccessFee, collectRate, congestion, congestionFee, parking, priceNote });
+  res.json({ biz: { name: s.bizName || "", phone: s.bizPhone || "", email: s.bizEmail || "", vatRegistered: !!s.vatRegistered, vatRate: s.vatRate || 20, markup: s.markup != null && s.markup !== "" ? s.markup : 15 }, rates: pick(r) });
+}));
+
 /* ---------- public contractor sign-up ---------- */
 app.get("/join", (_req, res) => res.sendFile(pub("join.html")));
 app.get("/api/join/info", wrap(async (_req, res) => {
