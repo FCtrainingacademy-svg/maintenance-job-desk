@@ -19,6 +19,7 @@
 <script>
 (function(){
 "use strict";
+function clone0(o){return JSON.parse(JSON.stringify(o))}
 const linkFor=k=>k&&k.token?`${S.baseUrl||location.origin}/c/${k.token}`:"";
 const newToken=()=>{const b=new Uint8Array(18);crypto.getRandomValues(b);return btoa(String.fromCharCode(...b)).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"")};
 const STATUSES=[["new","New"],["scheduled","Booked"],["in_progress","On site"],["awaiting_parts","Awaiting parts"],["complete","Complete"],["invoiced","Invoiced"],["paid","Paid"],["cancelled","Cancelled"]];
@@ -32,12 +33,14 @@ const OPEN=["new","scheduled","in_progress","awaiting_parts"];
 const TRACK=[["posted","Posted"],["accepted","Accepted"],["booked","Booked in"],["enroute","On the way"],["onsite","On site"],["parts","Awaiting parts"],["done","Work complete"],["signedoff","Signed off"]];
 const TLABEL=Object.fromEntries(TRACK);
 const T2STATUS={accepted:"scheduled",booked:"scheduled",enroute:"scheduled",onsite:"in_progress",parts:"awaiting_parts",done:"complete"};
-const SERVER_D=["status","allocatedTo","allocatedAt","acceptedVia","agreedPrice","contractorAttendBy","contractorFinishBy","postedAt","recipients"];
+const SERVER_D=["status","allocatedTo","allocatedAt","acceptedVia","agreedPrice","contractorAttendBy","contractorFinishBy","postedAt","recipients","team","reserve"];
+const DEF_INTAKE={senders:[],groups:[]};
+const GROUP_MAX=8;
 const CONTRACTOR_KEYS=["status","scheduledAt","findings","completedAt"];
 const KPS={name:"K's Plumbing Store",web:"https://ksplumbingstore.co.uk",wa:"07488 287396"};
 const DEF_SET={bizName:"",bizAddress:"",bizPhone:"",bizEmail:"",bankName:"",sortCode:"",accountNo:"",payDays:14,vatRegistered:false,vatRate:20,labourRate:55,calloutDay:75,calloutOOH:140,markup:15,footer:"Thank you for your business."};
 
-const S={jobs:{},contacts:{},contractors:{},settings:{...DEF_SET},tab:"jobs",sel:null,draft:null,dirty:false,touched:new Set(),filter:"open",q:"",db:null,dbChecked:false,canWrite:true,
+const S={jobs:{},contacts:{},contractors:{},settings:{...DEF_SET},intake:clone0(DEF_INTAKE),intakeDirty:false,diary:{enabled:false},tab:"jobs",sel:null,draft:null,dirty:false,touched:new Set(),filter:"open",q:"",db:null,dbChecked:false,canWrite:true,
   loaded:{jobs:false},confirmDel:false,copyText:null,cDraft:null,kDraft:null,wa:{enabled:false},outbox:[],baseUrl:"",offline:false};
 try{const t=localStorage.getItem("jd-tab");if(t)S.tab=t;}catch(e){}
 
@@ -259,6 +262,7 @@ function filtered(){
 }
 function dispatchTag(j){
   const d=D(j);
+  if(d.mode==="group"){const n=(d.team||[]).length,sl=d.slots||2;return `<span class="pill ${n>=sl?"d-allocated":"d-open"}">${d.status==="withdrawn"?"Withdrawn":n+"/"+sl+" on it"+(d.reserve?" + reserve":"")}</span>`}
   if(d.status==="open"){const qn=Object.keys(j.quotes||{}).length;return `<span class="pill d-open">${d.mode==="quote"?(qn?qn+" quote"+(qn>1?"s":""):"Quotes wanted"):"Posted"}</span>`}
   if(d.allocatedTo)return `<span>👷 ${esc(kName(d.allocatedTo).split(" (")[0])}</span>`;
   return "";
@@ -303,6 +307,8 @@ function stepsHTML(j){
 }
 function broadcastText(j){
   const d=D(j),p=j.property||{};
+  if(d.mode==="group")return [`🔧 NEW JOB ${j.ref}${d.groupName?" – "+d.groupName+" group":""}`,`📅 ${fmtDT(j.scheduledAt||j.attendBy)}`,`📍 ${String(p.postcode||"").toUpperCase()}`,`${j.description||""}`,"",
+    `First ${d.slots||2} to accept get the job, the next one is reserve.`,`Reply "YES ${j.ref}" to accept.`].join("\n");
   return [`🔧 NEW JOB ${j.ref} – ${PLABEL[j.priority]||""}`,`${j.category||"Maintenance"} · ${area(p.postcode)||"London"} area`,j.description||"",
     `Attend by: ${fmtDT(j.attendBy)}`,
     d.mode==="quote"?`💷 Send your price and when you can attend${d.respondBy?" by "+fmtDT(d.respondBy):""}`:`💷 Fixed fee: ${gbp(d.fee)}`,
@@ -323,8 +329,28 @@ function contractorJobText(j){
   return L.join("\n");
 }
 
+function viewGroupDispatch(j){
+  const d=D(j),sl=d.slots||2,team=d.team||[],ro=!S.canWrite,src=j.source||{},done=!!(j.track||{}).done;
+  const via=v=>({whatsapp:"WhatsApp",app:"job page"}[v]||v||"");
+  const row=(t,label)=>`<li><time>${esc(label)}</time><span><b>${esc(t.name)}</b> <span class="mono">${esc(t.phone||"")}</span> <span class="hint">${t.promoted?"moved up from reserve ":"accepted "}${fmtDT(t.at)}${t.via?" via "+esc(via(t.via)):""}</span>
+    ${ro||done?"":` <button class="btn small danger" data-act="o-teamremove" data-k="${esc(t.id)}">Take off</button>`}</span></li>`;
+  const open=sl-team.length;
+  return `<div class="callout">
+    <div class="row"><span class="pill ${open<=0?"d-allocated":"d-open"}">${d.status==="withdrawn"?"Withdrawn":team.length+"/"+sl+" on it"+(d.reserve?" + reserve":"")}</span>
+      <span>${esc(d.groupName||"")} group · sent to ${(d.recipients||[]).length} contractor${(d.recipients||[]).length===1?"":"s"}</span>
+      ${src.name?`<span class="hint">sent in by ${esc(src.name)}${src.phone?" ("+esc(src.phone)+")":""} on WhatsApp</span>`:""}</div>
+    <ul class="log">${team.map((t,i)=>row(t,"Engineer "+(i+1))).join("")}${d.reserve?row(d.reserve,"Reserve"):""}
+      ${open>0&&d.status!=="withdrawn"?`<li><time>Open</time><span class="hint">${open} place${open>1?"s":""} waiting for the group to accept</span></li>`:""}
+      ${open<=0&&!d.reserve&&d.status!=="withdrawn"?'<li><time>Reserve</time><span class="hint">none yet – the next to accept becomes reserve</span></li>':""}</ul>
+    <p class="hint">Taking someone off moves the reserve up. With no reserve, the place re-opens and the group is alerted again. The person who sent the job in gets a WhatsApp each time.</p>
+    ${team.length?stepsHTML(j):""}
+    <div class="row">${d.status!=="withdrawn"&&!done?'<button class="btn small" data-act="o-resend">Resend alert to the group</button>':""}<button class="btn small" data-act="copy-broadcast">Copy group message</button>
+      ${d.status!=="withdrawn"&&!done&&!ro?'<button class="btn small danger" data-act="o-withdraw" style="margin-left:auto">Withdraw job</button>':""}</div>
+  </div>`;
+}
 function viewDispatch(j){
   const d=D(j),ro=!S.canWrite;
+  if(d.mode==="group")return viewGroupDispatch(j);
   const ks=activeK();
   if(!ks.length)return `<p class="hint">No contractors saved yet. Add your maintenance people in the <button class="btn small" data-tab="contractors">Contractors</button> tab, then post jobs to them from here.</p>`;
   if(d.allocatedTo){
@@ -896,11 +922,38 @@ function viewSettings(){
    ${f("footer","Invoice footer")}
    <div class="row"><button class="btn primary" data-act="s-save" ${S.canWrite&&S.db?"":"disabled"}>Save settings</button><span class="hint">New jobs pick up the call-out and labour rate from here.</span></div>
   </div></div>
+  ${viewIntake()}
   ${viewRateCard()}
   <div class="panel" style="max-width:860px;margin-top:16px"><div class="panel-h"><h2>WhatsApp messages</h2>
     ${S.wa&&S.wa.enabled?'<span class="pill d-allocated">Connected</span>':'<span class="pill d-open">Not connected – messages are logged, not sent</span>'}</div>
   <div class="panel-b">
     ${(S.outbox||[]).length?`<ul class="log">${S.outbox.map(o=>`<li><time>${fmtDT(o.at)}</time><span><span class="mono">+${esc(o.to)}</span> ${esc(o.summary||"")} ${o.error?`<span class="pill late">${esc(o.error)}</span>`:o.simulated?'<span class="pill">not sent</span>':'<span class="pill d-allocated">sent</span>'}</span></li>`).join("")}</ul>`:'<p class="hint">Job alerts, contractor replies and customer updates will be listed here.</p>'}
+  </div></div>`;
+}
+
+function viewIntake(){
+  const it=S.intake,ks=activeK(),ro=!(S.canWrite&&S.db);
+  const senders=(it.senders||[]).map((p,i)=>`<tr><td><input data-ipath="senders.${i}.name" value="${esc(p.name)}" placeholder="Name"></td>
+    <td><input data-ipath="senders.${i}.phone" value="${esc(p.phone)}" placeholder="07…" inputmode="tel"></td>
+    <td style="width:40px"><button class="btn small danger" data-act="i-delsender" data-i="${i}" aria-label="Remove person">✕</button></td></tr>`).join("");
+  const groups=(it.groups||[]).map((g,i)=>{const mem=g.members||[],full=mem.length>=GROUP_MAX;
+    return `<div class="callout">
+      <div class="row"><label class="f" style="flex:1;min-width:180px"><span>Group name</span><input data-ipath="groups.${i}.name" value="${esc(g.name)}" placeholder="e.g. Ilford"></label>
+        <label class="row" style="gap:6px"><input type="radio" name="idefault" data-idefault="${i}" ${g.isDefault?"checked":""}> Default group</label>
+        <button class="btn small danger" data-act="i-delgroup" data-i="${i}">Remove group</button></div>
+      <span class="hint">${mem.length} of ${GROUP_MAX} contractors${full?" – group full":""}</span>
+      <div class="picklist">${ks.map(k=>{const on=mem.includes(k.id);return `<label class="${on?"match":""}"><input type="checkbox" data-imember="${i}" value="${esc(k.id)}" ${on?"checked":""} ${!on&&full?"disabled":""}><span><b>${esc(k.name)}</b>${k.phone?"":' <span class="hint">(no mobile)</span>'}<br><span class="hint">${esc((k.trades||[]).slice(0,3).join(", ")||"All trades")}${k.areas?" · "+esc(k.areas):""}</span></span></label>`}).join("")||'<p class="hint">Add contractors in the Contractors tab first.</p>'}</div>
+    </div>`}).join("");
+  return `<div class="panel" style="max-width:860px;margin-top:16px"><div class="panel-h"><h2>WhatsApp job intake</h2>${S.diary&&S.diary.enabled?'<span class="pill d-allocated">Diary linked</span>':'<span class="pill d-open">Diary not linked</span>'}</div>
+  <div class="panel-b">
+    <p class="hint">The people below can send jobs to the job desk WhatsApp number, e.g. <span class="mono">Wed 22 Oct 9am, 14 Cranbrook Rd IG1 4PU, combi no hot water</span>. The bot shows them what it read and they reply YES. Everyone in the group gets the date, time, postcode and job. The first 2 to accept are on it and the 3rd is reserve. The 2 on it get the full address and the name and number of whoever sent the job in. The job also goes in the team diary.</p>
+    <b style="font-size:13px">Who can send jobs in</b>
+    <div class="tablewrap"><table class="grid"><thead><tr><th>Name</th><th>Mobile (WhatsApp)</th><th></th></tr></thead><tbody>${senders||'<tr><td colspan="3" class="hint">Nobody yet – add the people who book jobs.</td></tr>'}</tbody></table></div>
+    <div><button class="btn small" data-act="i-addsender">+ Add person</button></div>
+    <b style="font-size:13px">Contractor groups</b>
+    ${groups||'<p class="hint">No groups yet. Add one, give it a name (e.g. an area) and tick up to 8 contractors.</p>'}
+    <div><button class="btn small" data-act="i-addgroup">+ Add group</button></div>
+    <div class="row"><button class="btn primary" data-act="i-save" ${ro?"disabled":""}>Save intake settings</button>${S.intakeDirty?'<span class="hint">Unsaved changes</span>':""}</div>
   </div></div>`;
 }
 
@@ -1058,12 +1111,29 @@ document.addEventListener("click",async ev=>{
     case "r-delsvc":S.rates.services.splice(+t.dataset.i,1);S.ratesDirty=true;render();break;
     case "r-copyprices":copy((S.baseUrl||location.origin)+"/prices","price list link");break;
     case "s-save":{const ok=await write("settings/business",S.settings);if(ok)toast("Settings saved");break}
+    case "i-addsender":S.intake.senders.push({name:"",phone:""});S.intakeDirty=true;render();break;
+    case "i-delsender":S.intake.senders.splice(+t.dataset.i,1);S.intakeDirty=true;render();break;
+    case "i-addgroup":S.intake.groups.push({id:"g"+Date.now().toString(36),name:"",members:[],isDefault:!S.intake.groups.length});S.intakeDirty=true;render();break;
+    case "i-delgroup":{const g=S.intake.groups.splice(+t.dataset.i,1)[0];if(g&&g.isDefault&&S.intake.groups[0])S.intake.groups[0].isDefault=true;S.intakeDirty=true;render();break}
+    case "i-save":{const it=S.intake;
+      if(it.senders.some(p=>!p.phone||intl(p.phone).length<10)){toast("Add a mobile number for everyone who can send jobs in");break}
+      if(it.groups.some(g=>!String(g.name||"").trim())){toast("Give every group a name");break}
+      const names=it.groups.map(g=>g.name.trim().toLowerCase());if(new Set(names).size!==names.length){toast("Two groups have the same name");break}
+      it.groups.forEach(g=>{g.name=g.name.trim();g.members=(g.members||[]).filter(id=>S.contractors[id]).slice(0,GROUP_MAX)});
+      if(await write("settings/intake",it)){S.intakeDirty=false;toast("Intake settings saved");render()}break}
+    case "o-teamremove":{
+      try{const r=await S.db.api("POST",`/api/jobs/${j.id}/team-remove`,{kid:t.dataset.k});
+        toast(r.promoted?`Taken off – ${r.promoted} (reserve) moved up`:r.reopened?"Taken off – the place is open to the group again":"Taken off the job");S.db.refresh()}
+      catch(e){writeErr(e)}break}
   }
 });
 document.addEventListener("keydown",ev=>{if(ev.key==="Enter"){const t=ev.target.closest("[data-job]");if(t&&!t.dataset.act)selectJob(t.dataset.job);if(ev.target.id==="lognote"){ev.preventDefault();document.querySelector('[data-act="add-log"]').click()}if(ev.target.id==="customAlert")document.querySelector('[data-act="o-alert"]').click()}});
 
 function onField(ev){
   const el=ev.target;
+  if(el.dataset.ipath){setPath(S.intake,el.dataset.ipath,el.value);if(!S.intakeDirty){S.intakeDirty=true}return}
+  if(el.dataset.imember!=null&&el.dataset.imember!==""){const g=S.intake.groups[+el.dataset.imember];if(g){const st=new Set(g.members||[]);el.checked?st.add(el.value):st.delete(el.value);g.members=[...st]}S.intakeDirty=true;render();return}
+  if(el.dataset.idefault!=null&&el.dataset.idefault!==""){S.intake.groups.forEach((g,i)=>g.isDefault=i===+el.dataset.idefault);S.intakeDirty=true;render();return}
   if(el.id==="q"){S.q=el.value;const pos=el.selectionStart;render();const q=$("#q");q.focus();try{q.setSelectionRange(pos,pos)}catch(e){}return}
   if(el.dataset.cpath&&S.cDraft){S.cDraft[el.dataset.cpath]=el.value;return}
   if(el.dataset.kpath&&S.kDraft){S.kDraft[el.dataset.kpath]=el.type==="checkbox"?el.checked:el.value;if(el.type==="checkbox")render();return}
@@ -1101,7 +1171,7 @@ document.addEventListener("change",ev=>{
   if(el.dataset.rpath){onRate(el,true);return}
   if(el.tagName==="SELECT"||el.type==="checkbox"||el.type==="radio")onField(ev);
 });
-window.addEventListener("beforeunload",e=>{if(S.dirty){e.preventDefault();e.returnValue=""}});
+window.addEventListener("beforeunload",e=>{if(S.dirty||S.intakeDirty){e.preventDefault();e.returnValue=""}});
 
 /* ---------- server connection ---------- */
 function makeDb(){
@@ -1119,7 +1189,7 @@ function makeDb(){
     try{
       if(!force&&last!==null){const v=(await api("GET","/api/version")).v;if(v===last)return}
       const all=await api("GET","/api/all");last=all.v;
-      S.wa=all.wa;S.baseUrl=all.baseUrl;S.outbox=all.outbox||[];S.noDb=all.db===false&&location.hostname!=="localhost";
+      S.wa=all.wa;S.diary=all.diary||{enabled:false};S.baseUrl=all.baseUrl;S.outbox=all.outbox||[];S.noDb=all.db===false&&location.hostname!=="localhost";
       listeners.forEach(fn=>fn(all));
     }catch(e){if(S.offline)render()}
   }
@@ -1140,6 +1210,7 @@ S.db=makeDb();
 S.db.on(all=>{
   S.contractors=byId(all.contractors);S.contacts=byId(all.contacts);
   const set=(all.settings||[]).find(d=>d.id==="business");if(set&&!(S.tab==="settings"&&editing()))S.settings=Object.assign({},DEF_SET,set);
+  const ik=(all.settings||[]).find(d=>d.id==="intake");if(!S.intakeDirty)S.intake=Object.assign(clone(DEF_INTAKE),ik||{});
   const rt=(all.settings||[]).find(d=>d.id==="rates");if(!S.ratesDirty)S.rates=rt?Object.assign(clone(DEF_RATES),rt):clone(DEF_RATES);
   const m=byId(all.jobs);
   if(S.sel&&S.dirty&&!m[S.sel]&&S.jobs[S.sel])m[S.sel]=S.jobs[S.sel];

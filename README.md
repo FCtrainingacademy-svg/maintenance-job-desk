@@ -6,6 +6,7 @@ Property maintenance job desk for the office, with contractor dispatch over What
 - **Contractors** (`/c/<personal link>`, no login): see posted jobs, accept (first wins) or quote, set their timeframe, update progress (booked → on the way → on site → complete), send notes, hand a job back.
 - **WhatsApp**:
   - Contractors get job alerts with **Accept job** / **Not for me** buttons. Replying `YES PM-0012` also works.
+  - **Job intake:** people on the approved list (Settings → WhatsApp job intake) send jobs to the job desk number, e.g. `Thu 23 Oct 9am, 14 Cranbrook Rd IG1 4PU, combi no hot water`. The bot replies with what it read and they answer `YES` (or `NO`, or `GROUP <name>` to change group, `HELP`, `GROUPS`). The job goes to every contractor in that group (up to 8) with the date, time, postcode and job. The first 2 to accept are on it and get the address and the sender's name and number; the 3rd is reserve; anyone after that is told it's full. `DROP PM-0012` (or Take off in the office) moves the reserve up, or re-opens the place to the group if there's no reserve. The sender gets a WhatsApp at each step.
   - Residents (and, if ticked on the job, the agent or landlord) get progress updates.
 
 ## Environment variables (Render → service → Environment)
@@ -21,6 +22,8 @@ Property maintenance job desk for the office, with contractor dispatch over What
 | `WHATSAPP_VERIFY_TOKEN` | Any string you choose. Enter the same one in Meta's webhook settings. |
 | `WHATSAPP_APP_SECRET` | App secret (Meta app → Settings → Basic). Lets the app check that webhook calls really come from Meta. |
 | `WHATSAPP_TEMPLATE_LANG` | Optional. Template language code. Default `en_GB`. |
+| `DIARY_SYNC_URL` | Optional. `https://ksplumbingstore.co.uk/api/bot/diary-sync` – copies every dated job into the team diary. |
+| `DIARY_SYNC_KEY` | Optional. A long random string; set the same value as `DIARY_SYNC_KEY` on the K's Plumbing Store website. |
 
 Until `WHATSAPP_TOKEN` and `WHATSAPP_PHONE_ID` are set, nothing is sent. Every message is listed under **Settings → WhatsApp messages** as "not sent". The job sheet still has one-tap WhatsApp buttons you can use by hand.
 
@@ -64,6 +67,10 @@ Hi {{1}}, here's an update on the repair at {{2}} (ref {{3}}):
 Questions? Contact {{5}} on {{6}}.
 ```
 
+Group jobs reuse `new_job_alert`: {{2}} is the group name, {{4}} the full postcode and {{6}} the date and time.
+
+**About "groups":** each contractor gets the job in their own chat with the job desk number rather than in a shared WhatsApp group. Meta's Groups API (bot posting into a real WhatsApp group) is only open to Official Business Accounts, and a group made that way holds 8 including the business number. If the number ever gets Official Business status, the groups here can be switched to real WhatsApp groups.
+
 Meta usually approves Utility templates within minutes to a few hours. Business-initiated messages need an approved template. Free-text replies (like "Job PM-0012 is yours…") only go out within 24 hours of the contractor's last message, which is always the case when they've just tapped a button.
 
 **Consent:** only message contractors, residents and agents who expect messages from you. The contractor invite asks them to reply OK. For residents, tell the agent or landlord that tenants will get WhatsApp updates about their repair.
@@ -86,3 +93,5 @@ OFFICE_PASSWORD=test PORT=3999 npm start & BASE=http://localhost:3999 OFFICE_PAS
 - quotes;
 - WhatsApp button and text replies;
 - handing a job back.
+
+`node test/intake.js` (see the top of the file for how to start the server) checks WhatsApp job intake, the 2 + reserve rules, drop-outs, re-alerts and the diary copy.

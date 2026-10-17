@@ -24,6 +24,10 @@ services:
         generateValue: true
       - key: WHATSAPP_APP_SECRET
         sync: false
+      - key: DIARY_SYNC_URL
+        value: https://ksplumbingstore.co.uk/api/bot/diary-sync
+      - key: DIARY_SYNC_KEY
+        sync: false
 
 databases:
   - name: maintenance-job-desk-db

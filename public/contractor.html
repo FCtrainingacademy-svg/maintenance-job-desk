@@ -51,7 +51,7 @@ async function load(){
 function editing(){const a=document.activeElement;return a&&(a.tagName==="INPUT"||a.tagName==="TEXTAREA")}
 async function act(path,body,okMsg){
   if(S.busy)return;S.busy=true;render();
-  try{await api("POST",path,body);toast(okMsg);await load();return true}
+  try{const r=await api("POST",path,body);toast(typeof okMsg==="function"?okMsg(r||{}):okMsg);await load();return r||true}
   catch(e){toast(e.message);return false}
   finally{S.busy=false;render()}
 }
@@ -82,16 +82,19 @@ function viewBoard(){
   if(!L.length)return `<div class="board"><div class="panel"><div class="empty">No jobs waiting right now.<br>You'll get a WhatsApp message when one comes up, and it will appear here.</div></div></div>`;
   return `<div class="board">${L.map(j=>{const q=j.myQuote;return `<article class="jcard p-${esc(j.priority)}">
     <div class="top"><span class="mono">${esc(j.ref)}</span><span class="pill p-${esc(j.priority)}">${esc(PLABEL[j.priority]||"")}</span>${j.example?'<span class="example">example</span>':""}
-      <span class="fee"${j.mode==="quote"?' style="font-size:16px"':""}>${j.mode==="quote"?"Quote wanted":gbp(j.fee)}</span></div>
+      <span class="fee"${j.mode!=="flat"?' style="font-size:16px"':""}>${j.mode==="quote"?"Quote wanted":j.mode==="group"?(j.iAmReserve?"You're reserve":j.places?`${j.places} of ${j.slots} place${j.slots>1?"s":""} left`:"Reserve place"):gbp(j.fee)}</span></div>
     <h3>${esc(j.category||"Maintenance job")} · ${esc(j.area||"London")}</h3>
     <div>${esc(j.description||"")}</div>
-    <div class="meta"><span>Attend by <b>${fmtDT(j.attendBy)}</b></span>${j.propertyType?`<span>${esc(j.propertyType)}</span>`:""}${j.respondBy?`<span>Quotes by <b>${fmtDT(j.respondBy)}</b></span>`:""}</div>
+    <div class="meta"><span>${j.mode==="group"?"When":"Attend by"} <b>${fmtDT(j.attendBy)}</b></span>${j.propertyType?`<span>${esc(j.propertyType)}</span>`:""}${j.respondBy?`<span>Quotes by <b>${fmtDT(j.respondBy)}</b></span>`:""}</div>
     ${j.mode==="quote"?`<div class="callout">${q?`<div class="hint">You quoted <b>${gbp(q.price)}</b>, attend ${fmtDT(q.attendBy)}. You can change it below.</div>`:""}
       <div class="g"><label class="f"><span>Your price £</span><input type="number" inputmode="decimal" step="0.01" min="0" id="qp-${esc(j.id)}" value="${esc(q&&q.price)}"></label>
       <label class="f"><span>Can attend</span><input type="datetime-local" id="qa-${esc(j.id)}" value="${esc(q&&q.attendBy)}"></label>
       <label class="f"><span>Finished by</span><input type="datetime-local" id="qf-${esc(j.id)}" value="${esc(q&&q.finishBy)}"></label></div>
       <label class="f"><span>Note (optional)</span><input id="qn-${esc(j.id)}" value="${esc(q&&q.note)}" placeholder="e.g. Includes parts, may need a second visit"></label>
       <div class="row"><button class="btn primary" data-act="quote" data-id="${esc(j.id)}" ${S.busy?"disabled":""}>${q?"Update quote":"Send quote"}</button></div></div>`
+    :j.mode==="group"&&j.iAmReserve?`<div class="callout"><div class="hint">You're the reserve. If one of the ${j.slots} engineers drops out, the job is yours and we'll WhatsApp you the address and contact.</div>
+        <div class="row"><button class="btn small danger" data-act="unreserve" data-id="${esc(j.id)}" ${S.busy?"disabled":""}>Step down as reserve</button></div></div>`
+    :j.mode==="group"?`<div class="row"><button class="btn go big" data-act="accept" data-id="${esc(j.id)}" ${S.busy?"disabled":""}>${j.places?"Accept job":"Be the reserve"}</button><span class="hint">${j.places?`First ${j.slots} to accept get it, the next one is reserve. The address unlocks once you're on it.`:"Both places are taken. As reserve you get the job if someone drops out."}</span></div>`
     :`<div class="row"><button class="btn go big" data-act="accept" data-id="${esc(j.id)}" ${S.busy?"disabled":""}>Accept job</button><span class="hint">Address and access details unlock once it's yours.</span></div>`}
   </article>`}).join("")}</div>`;
 }
@@ -134,6 +137,8 @@ function viewMine(j){
     ${p.accessNotes?`<div class="hint">${esc(p.accessNotes)}</div>`:""}
     ${res?`<div class="callout"><span class="hint">RESIDENTS</span>${res}</div>`:""}
     ${mats?`<div><span class="hint">MATERIALS</span><ul style="margin:4px 0 0;padding-left:18px">${mats}</ul><div class="hint">Order from K's Plumbing Store on WhatsApp: 07488 287396</div></div>`:""}
+    ${j.contact?`<div class="callout"><span class="hint">CONTACT FOR THIS JOB</span><div><b>${esc(j.contact.name)}</b>${j.contact.phone?` <a class="mono" href="tel:${esc(String(j.contact.phone).replace(/\s/g,""))}">${esc(j.contact.phone)}</a>`:""}</div></div>`:""}
+    ${(j.team||[]).length?`<div class="hint">Also on this job: <b>${(j.team||[]).map(esc).join(", ")}</b></div>`:""}
     ${j.officePhone?`<div class="hint">Office: <a class="mono" href="tel:${esc(j.officePhone.replace(/\s/g,""))}">${esc(j.officePhone)}</a></div>`:""}
    </article>
    <section class="panel"><div class="panel-h"><h2>Progress</h2></div><div class="panel-b">
@@ -178,13 +183,15 @@ document.addEventListener("click",async ev=>{
   const id=t.dataset.id,v=x=>{const el=document.getElementById(x);return el?el.value.trim():""};
   switch(t.dataset.act){
     case "back":S.sel=null;render();break;
-    case "accept":if(await act(`/jobs/${id}/accept`,{},"Job accepted – it's yours. Set your attend time.")){S.sel=id;S.tab="mine";render();window.scrollTo(0,0)}break;
+    case "accept":{const r=await act(`/jobs/${id}/accept`,{},x=>x.role==="reserve"?"You're the reserve – we'll WhatsApp you if a place opens":x.role==="team"?"You're on this job – the address and contact are below.":"Job accepted – it's yours. Set your attend time.");
+      if(r&&r.role!=="reserve"){S.sel=id;S.tab="mine";render();window.scrollTo(0,0)}break}
     case "quote":await act(`/jobs/${id}/quote`,{price:v("qp-"+id),attendBy:v("qa-"+id),finishBy:v("qf-"+id),note:v("qn-"+id)},"Quote sent to the office");break;
     case "step":await act(`/jobs/${id}/step`,{step:t.dataset.step},(TLABEL[t.dataset.step]||"Updated")+" ✓");break;
     case "time":await act(`/jobs/${id}/time`,{attendBy:v("ka"),finishBy:v("kf")},"Timeframe saved");break;
     case "done":if(await act(`/jobs/${id}/done`,{text:v("kdone")},"Marked complete – the office will sign it off")){S.sel=null;S.tab="done";render()}break;
     case "note":if(await act(`/jobs/${id}/note`,{text:v("knote")},"Note sent")){}break;
     case "handback":S.confirmBack=S.sel;render();break;
+    case "unreserve":if(await act(`/jobs/${id}/handback`,{},"You're no longer the reserve")){render()}break;
     case "handback-no":S.confirmBack=null;render();break;
     case "handback-yes":if(await act(`/jobs/${id}/handback`,{},"Job handed back")){S.sel=null;S.confirmBack=null;S.tab="available";render()}break;
   }

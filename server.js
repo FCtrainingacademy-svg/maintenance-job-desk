@@ -8,6 +8,8 @@ const { makeStore, deepMerge, COLLECTIONS } = require("./lib/store");
 const auth = require("./lib/auth");
 const { makeWhatsApp } = require("./lib/whatsapp");
 const { makeDispatch } = require("./lib/dispatch");
+const { makeDiarySync } = require("./lib/diary-sync");
+const { makeIntake } = require("./lib/intake");
 const profile = require("./lib/profile");
 
 const app = express();
@@ -18,9 +20,11 @@ app.use(express.urlencoded({ extended: false }));
 const store = makeStore();
 const wa = makeWhatsApp(store);
 const baseUrl = () => (process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`).replace(/\/$/, "");
-const dispatch = makeDispatch(store, wa, baseUrl);
+const dispatch = makeDispatch(store, wa, baseUrl, makeDiarySync);
+const diary = makeDiarySync();
+const intake = makeIntake(store, wa, dispatch, baseUrl);
 const PORT = Number(process.env.PORT) || 3000;
-const OFFICE_COLS = COLLECTIONS.filter(c => c !== "outbox");
+const OFFICE_COLS = COLLECTIONS.filter(c => c !== "outbox" && c !== "intake");
 const SAFE_ID = /^[A-Za-z0-9_\-.~:@+]{1,120}$/;
 const pub = f => path.join(__dirname, "public", f);
 const wrap = fn => (req, res, next) => fn(req, res, next).catch(e => { console.error(e); res.status(500).json({ error: "Something went wrong – try again" }); });
@@ -45,7 +49,7 @@ app.get("/", auth.requireOffice, (_req, res) => res.sendFile(pub("office.html"))
 const office = express.Router();
 office.use(auth.requireOffice);
 office.get("/all", wrap(async (_req, res) => {
-  const out = { v: await store.version(), wa: { enabled: wa.enabled() }, baseUrl: baseUrl(), db: !!process.env.DATABASE_URL };
+  const out = { v: await store.version(), wa: { enabled: wa.enabled() }, diary: { enabled: diary.enabled() }, baseUrl: baseUrl(), db: !!process.env.DATABASE_URL };
   for (const c of OFFICE_COLS) out[c] = await store.list(c);
   out.outbox = (await store.list("outbox")).sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 30);
   res.json(out);
@@ -53,15 +57,27 @@ office.get("/all", wrap(async (_req, res) => {
 office.get("/version", wrap(async (_req, res) => res.json({ v: await store.version() })));
 const colOk = (req, res) => { if (!OFFICE_COLS.includes(req.params.col) || !SAFE_ID.test(req.params.id)) { res.status(400).json({ error: "Bad path" }); return false; } return true; };
 office.get("/docs/:col/:id", wrap(async (req, res) => { if (!colOk(req, res)) return; const d = await store.get(req.params.col, req.params.id); res.json({ exists: !!d, data: d }); }));
-office.put("/docs/:col/:id", wrap(async (req, res) => { if (!colOk(req, res)) return; await store.put(req.params.col, req.params.id, req.body || {}); res.json({ ok: true }); }));
+// Jobs saved in the office also go to the team diary.
+const afterJobWrite = async (col, id) => { if (col === "jobs") dispatch.pushDiary(await store.get("jobs", id)); };
+office.put("/docs/:col/:id", wrap(async (req, res) => { if (!colOk(req, res)) return; await store.put(req.params.col, req.params.id, req.body || {}); res.json({ ok: true }); afterJobWrite(req.params.col, req.params.id).catch(() => {}); }));
 office.patch("/docs/:col/:id", wrap(async (req, res) => {
   if (!colOk(req, res)) return;
   const r = await store.withLock(req.params.col, req.params.id, async cur => cur ? { doc: deepMerge(cur, req.body || {}) } : { missing: true });
   if (r && r.missing) return res.status(404).json({ error: "Not found" });
   res.json({ ok: true });
+  afterJobWrite(req.params.col, req.params.id).catch(() => {});
 }));
-office.delete("/docs/:col/:id", wrap(async (req, res) => { if (!colOk(req, res)) return; await store.del(req.params.col, req.params.id); res.json({ ok: true }); }));
+office.delete("/docs/:col/:id", wrap(async (req, res) => {
+  if (!colOk(req, res)) return;
+  const old = req.params.col === "jobs" ? await store.get("jobs", req.params.id) : null;
+  await store.del(req.params.col, req.params.id); res.json({ ok: true });
+  if (old && old.ref) diary.remove(old.ref).catch(e => console.error("diary sync", e.message));
+}));
 office.post("/jobs/:id/notify-post", wrap(async (req, res) => res.json(await dispatch.notifyPost(req.params.id))));
+office.post("/jobs/:id/team-remove", wrap(async (req, res) => {
+  const r = await dispatch.groupDrop(String(req.body.kid || ""), req.params.id, "office");
+  res.status(r.ok ? 200 : 409).json(r.ok ? { ok: true, promoted: r.promoted ? r.promoted.name : "", reopened: !!r.reopened } : { error: r.error });
+}));
 office.post("/jobs/:id/notify-assigned", wrap(async (req, res) => res.json(await dispatch.notifyAssigned(req.params.id))));
 office.post("/jobs/:id/alert", wrap(async (req, res) => {
   const j = await store.get("jobs", req.params.id); if (!j) return res.status(404).json({ error: "Job not found" });
@@ -94,12 +110,13 @@ cr.use(wrap(async (req, res, next) => {
 }));
 cr.get("/", wrap(async (req, res) => {
   const c = req.contractor, jobs = await store.list("jobs"), s = (await store.get("settings", "business")) || {};
-  const board = jobs.filter(j => { const d = j.dispatch || {}; return d.status === "open" && !d.allocatedTo && (d.recipients || []).includes(c.id); })
-    .sort((a, b) => String(a.attendBy).localeCompare(String(b.attendBy))).map(j => dispatch.boardView(j, c));
-  const mine = jobs.filter(j => j.dispatch && j.dispatch.allocatedTo === c.id).sort((a, b) => String(b.dispatch.allocatedAt).localeCompare(String(a.dispatch.allocatedAt))).map(j => dispatch.myView(j, c, s));
+  const reserveFor = j => j.dispatch && j.dispatch.mode === "group" && j.dispatch.reserve && j.dispatch.reserve.id === c.id && !(j.track || {}).done && ["open", "allocated"].includes(j.dispatch.status);
+  const board = jobs.filter(j => dispatch.canTake(j, c) || reserveFor(j))
+    .sort((a, b) => String(a.scheduledAt || a.attendBy).localeCompare(String(b.scheduledAt || b.attendBy))).map(j => dispatch.boardView(j, c));
+  const mine = jobs.filter(j => dispatch.isMine(j, c)).sort((a, b) => String(b.dispatch.allocatedAt).localeCompare(String(a.dispatch.allocatedAt))).map(j => dispatch.myView(j, c, s));
   res.json({ needsDetails: !c.selfBillAgreed || !c.accountNo, me: { name: c.name, company: c.company || "" }, office: { name: s.bizName || "", phone: s.bizPhone || "" }, board, mine });
 }));
-const act = fn => wrap(async (req, res) => { const r = await fn(req.contractor, req.params.id, req.body || {}); res.status(r.ok ? 200 : 409).json(r.ok ? { ok: true } : { error: r.error === "QUOTE" ? "This job needs a quote." : r.error }); });
+const act = fn => wrap(async (req, res) => { const r = await fn(req.contractor, req.params.id, req.body || {}); res.status(r.ok ? 200 : 409).json(r.ok ? { ok: true, role: r.role || "" } : { error: r.error === "QUOTE" ? "This job needs a quote." : r.error }); });
 cr.post("/jobs/:id/accept", act((c, id) => dispatch.accept(c, id, "app")));
 cr.post("/jobs/:id/quote", act((c, id, b) => dispatch.quote(c, id, b)));
 cr.post("/jobs/:id/step", act((c, id, b) => dispatch.step(c, id, b.step)));
@@ -185,10 +202,13 @@ app.post("/webhook", (req, res) => {
   (async () => {
     for (const m of msgs) {
       const payload = m.type === "button" ? m.button && m.button.payload : m.type === "interactive" ? m.interactive && m.interactive.button_reply && m.interactive.button_reply.id : null;
-      await dispatch.handleIncoming(String(m.from || ""), payload, m.type === "text" ? m.text && m.text.body : "").catch(err => console.error("webhook", err));
+      const from = String(m.from || ""), body = m.type === "text" ? m.text && m.text.body : "";
+      try {
+        if (!(await intake.maybeHandle(from, payload, body))) await dispatch.handleIncoming(from, payload, body);
+      } catch (err) { console.error("webhook", err); }
     }
   })();
 });
 
-store.init().then(() => app.listen(PORT, () => console.log(`Job desk on :${PORT} (${process.env.DATABASE_URL ? "Postgres" : "local file"} store, WhatsApp ${wa.enabled() ? "live" : "simulated"})`)));
+store.init().then(() => app.listen(PORT, () => console.log(`Job desk on :${PORT} (${process.env.DATABASE_URL ? "Postgres" : "local file"} store, WhatsApp ${wa.enabled() ? "live" : "simulated"}, diary sync ${diary.enabled() ? "on" : "off"})`)));
 module.exports = app;
