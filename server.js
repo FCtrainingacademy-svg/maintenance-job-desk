@@ -202,9 +202,10 @@ app.post("/webhook", (req, res) => {
   (async () => {
     for (const m of msgs) {
       const payload = m.type === "button" ? m.button && m.button.payload : m.type === "interactive" ? m.interactive && m.interactive.button_reply && m.interactive.button_reply.id : null;
-      const from = String(m.from || ""), body = m.type === "text" ? m.text && m.text.body : "";
+      const from = String(m.from || ""), body = m.type === "text" ? m.text && m.text.body
+        : (m.type === "image" || m.type === "document" || m.type === "video") ? (m[m.type] && m[m.type].caption) || "" : "";
       try {
-        if (!(await intake.maybeHandle(from, payload, body))) await dispatch.handleIncoming(from, payload, body);
+        if (!(await intake.maybeHandle(from, payload, body, m.type))) await dispatch.handleIncoming(from, payload, body);
       } catch (err) { console.error("webhook", err); }
     }
   })();

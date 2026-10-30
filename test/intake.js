@@ -37,16 +37,47 @@ const ANIS = "447700900123";
     groups: [{ id: "g1", name: "Ilford", members: ["gA", "gB", "gC", "gD"], isDefault: true }, { id: "g2", name: "East", members: ["gA"] }] });
 
   // unknown number is ignored
-  await say("447700999999", "Wed 22 Oct 9am, 14 Cranbrook Rd IG1 4PU, combi no hot water");
+  await say("447700999999", "Wed 25 Nov 9am, 14 Cranbrook Rd IG1 4PU, combi no hot water");
   ok(!(await lastTo("447700999999")), "messages from numbers not on the list are ignored");
 
   // missing details
+  await say(ANIS, "hello?");
+  ok(/couldn't find the/.test((await lastTo(ANIS)).summary), "a message with no job in it gets the example back");
   await say(ANIS, "boiler broken tomorrow");
-  ok(/couldn't find the time or postcode/.test((await lastTo(ANIS)).summary), "missing time and postcode are asked for");
+  ok(/What's the time and postcode\?/.test((await lastTo(ANIS)).summary), "missing time and postcode are asked for");
+  await say(ANIS, "yes");
+  ok(/What's the time and postcode/.test((await lastTo(ANIS)).summary), "YES on an incomplete job asks again instead of posting");
+  await say(ANIS, "10am IG3 8AA");
+  ok(/IG3 8AA/.test((await lastTo(ANIS)).summary) && /Reply YES/.test((await lastTo(ANIS)).summary), "the reply fills in the missing bits");
+  await say(ANIS, "no");
+
+  // forwarded message from an agent: greeting, sign-off, tenant number, no date/time → ASAP
+  await say(ANIS, "Hi Anis,\nTenant at Flat 3, 22 Grosvenor Road, Ilford IG1 1LA has reported a leak under the kitchen sink. Tenant number 07700 900555.\nPlease attend asap.\nKind regards\nSarah\nBarker Lettings");
+  let fw = (await lastTo(ANIS)).summary, m;
+  m = fw;
+  ok(/Flat 3, 22 Grosvenor Road, Ilford, IG1 1LA/.test(m) && /ASAP/.test(m) && /07700900555 – kept on the job sheet/.test(m) && !/Kind regards|Sarah/.test(m), "a forwarded message is read: address, ASAP, tenant number kept back, sign-off dropped");
+  await say(ANIS, "Mon 3pm");
+  m = (await lastTo(ANIS)).summary;
+  ok(/Mon 2 Nov, 15:00/.test(m) && !/ASAP/.test(m), "replying with a day/time replaces ASAP");
+  await say(ANIS, "no");
+
+  // forwarded with nothing about when → asked, then ASAP
+  await say(ANIS, "The front door lock is broken at 41 Kingston Road IG1 1PB. Thanks, Tom");
+  ok(/What's the date and time\?/.test((await lastTo(ANIS)).summary), "no date or time in a forward → asked for it");
+  await say(ANIS, "asap");
+  m = (await lastTo(ANIS)).summary;
+  ok(/ASAP/.test(m) && /41 Kingston Road, IG1 1PB/.test(m) && /lock is broken/.test(m), "replying ASAP completes it");
+  await say(ANIS, "no");
+
+  // photos and voice notes
+  await hook(ANIS, { type: "audio", audio: { id: "x" } });
+  ok(/voice notes/.test((await lastTo(ANIS)).summary), "voice notes get a polite 'send text' reply");
+  await hook(ANIS, { type: "image", image: { id: "x", caption: "" } });
+  ok(/caption/.test((await lastTo(ANIS)).summary), "a photo without a caption is explained");
 
   // full job → summary
-  await say(ANIS, "Wed 22 Oct 9am, 14 Cranbrook Rd IG1 4PU, combi no hot water E119");
-  let m = (await lastTo(ANIS)).summary;
+  await say(ANIS, "Wed 25 Nov 9am, 14 Cranbrook Rd IG1 4PU, combi no hot water E119");
+  m = (await lastTo(ANIS)).summary;
   ok(/IG1 4PU/.test(m) && /Combi no hot water/.test(m) && /Ilford group \(4 contractors\)/.test(m) && /Reply YES/.test(m), "bot replies with what it read and the default group");
   await say(ANIS, "group east");
   ok(/East group \(1 contractor\)/.test((await lastTo(ANIS)).summary), "GROUP changes the group");
@@ -57,13 +88,13 @@ const ANIS = "447700900123";
   await say(ANIS, "yes");
   jobs = (await req("GET", "/api/all")).body.jobs;
   const job = jobs.find(j => j.source && j.source.via === "whatsapp");
-  ok(job && job.dispatch.mode === "group" && job.dispatch.recipients.length === 4 && job.scheduledAt === "2026-10-22T09:00" && job.property.postcode === "IG1 4PU", "YES creates the job for the Ilford group");
+  ok(job && job.dispatch.mode === "group" && job.dispatch.recipients.length === 4 && job.scheduledAt === "2026-11-25T09:00" && job.property.postcode === "IG1 4PU", "YES creates the job for the Ilford group");
   ok(/^Posted ✓ PM-\d{4}/.test((await lastTo(ANIS)).summary), "sender told it's posted");
   const ob = await outbox();
   ok(["447700900201", "447700900202", "447700900203", "447700900204"].every(n => ob.some(o => o.to === n && o.summary.includes(job.ref))), "all 4 group members alerted");
   await wait(300);
   const d0 = diaryHits.find(h => h.body.ref === job.ref);
-  ok(d0 && d0.key === "k" && d0.body.date === "2026-10-22" && d0.body.start === "09:00" && /0\/2 engineers/.test(d0.body.title), "job pushed to the diary");
+  ok(d0 && d0.key === "k" && d0.body.date === "2026-11-25" && d0.body.start === "09:00" && /0\/2 engineers/.test(d0.body.title), "job pushed to the diary");
   await say(ANIS, "yes");
   ok(/Nothing waiting/.test((await lastTo(ANIS)).summary), "a second YES doesn't post it twice");
 
@@ -122,7 +153,7 @@ const ANIS = "447700900123";
   ok(diaryHits.some(h => h.body.ref === job.ref && h.body.delete), "deleting the job removes it from the diary");
 
   // labelled format + #group
-  await say(ANIS, "Date: 24/10\nTime: 10:30\nAddress: 5 Green Lane, Ilford IG3 9XX\nJob: Annual boiler service\n#east");
+  await say(ANIS, "Date: 27/11\nTime: 10:30\nAddress: 5 Green Lane, Ilford IG3 9XX\nJob: Annual boiler service\n#east");
   ok(/East group/.test((await lastTo(ANIS)).summary) && /5 Green Lane, Ilford, IG3 9XX/.test((await lastTo(ANIS)).summary), "labelled lines and #group work");
   await say(ANIS, "no");
   ok(/Cancelled/.test((await lastTo(ANIS)).summary), "NO cancels");
