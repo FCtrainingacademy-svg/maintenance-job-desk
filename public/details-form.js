@@ -31,7 +31,7 @@ window.DetailsForm = (function () {
         <p class="hint">We raise your invoices for you, so you don't need to send any. Please read and accept:</p>
         <div class="callout" style="white-space:pre-line;font-size:13px">${esc(o.agreement)}</div>
         ${signed ? `<p class="hint">Accepted by ${esc(v.selfBillSignedName)} on ${esc(v.selfBillDate)}.</p>` :
-          `<label class="row" style="gap:8px;align-items:flex-start"><input type="checkbox" id="df-agree" style="margin-top:4px"> <span>I accept the self-billing agreement</span></label>
+          `<label class="row" style="gap:8px;align-items:flex-start"><input type="checkbox" id="df-agree" style="margin-top:4px"> <span>I accept the self-billing agreement <b>(required)</b></span></label>
            ${f("signedName", "Type your full name to sign", "", "text", 'autocomplete="name"')}`}
       </div></section>
       ${join ? `<label class="row" style="gap:8px;align-items:flex-start"><input type="checkbox" id="df-consent" style="margin-top:4px"> <span>I agree to receive job alerts and updates on WhatsApp at the number above. I can ask to stop at any time.</span></label>
@@ -52,6 +52,7 @@ window.DetailsForm = (function () {
       if (consent) data.consent = consent.checked;
       if (hp && hp.value) data.website = hp.value;
       const msg = form.querySelector("#df-msg"), btn = form.querySelector("button[type=submit]");
+      if (agree && !agree.checked) { msg.textContent = "Tick the box to accept the self-billing agreement – we can't pay you without it"; return; }
       if (agree && agree.checked && !data.signedName.trim()) { msg.textContent = "Type your full name to sign the agreement"; return; }
       btn.disabled = true; msg.textContent = "Saving…";
       try { await onSubmit(data); msg.textContent = ""; }

@@ -139,7 +139,7 @@ cr.post("/profile", wrap(async (req, res) => {
       const signed = String(b.signedName || "").trim().slice(0, 80);
       if (!signed) return { error: "Type your full name to accept the agreement" };
       Object.assign(doc, { selfBillAgreed: true, selfBillDate: new Date().toISOString().slice(0, 10), selfBillSignedName: signed, selfBillVersion: profile.AGREEMENT_VERSION });
-    }
+    } else if (!cur.selfBillAgreed) return { error: "Tick the box to accept the self-billing agreement" };
     return { doc };
   });
   if (r.missing) return res.status(404).json({ error: "This link isn't active" });
@@ -173,6 +173,8 @@ app.post("/api/join", wrap(async (req, res) => {
   if (b.website) return res.json({ ok: true }); // hidden honeypot field filled = bot
   if (!f.name || !f.phone) return res.status(400).json({ error: "Add your name and mobile number" });
   if (!b.consent) return res.status(400).json({ error: "Tick the box to agree to receive job messages on WhatsApp" });
+  if (b.agree !== true) return res.status(400).json({ error: "Tick the box to accept the self-billing agreement" });
+  if (!String(b.signedName || "").trim()) return res.status(400).json({ error: "Type your full name to sign the self-billing agreement" });
   const all = await store.list("contractors");
   if (all.some(k => k.phone && wa.intl(k.phone) === wa.intl(f.phone))) return res.status(409).json({ error: "This mobile number is already registered with us. Contact the office if you need a new job link." });
   const id = "app-" + crypto.randomBytes(6).toString("hex");
