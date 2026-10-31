@@ -105,6 +105,14 @@ function viewList(L,done){
     <h3>${esc(p.address||"")}${p.postcode?", "+esc(p.postcode):""}</h3>
     <div class="meta"><span>${esc(j.category||"")}</span><span>Attend <b>${fmtDT(j.contractorAttendBy||j.attendBy)}</b></span><span>${done?(j.track.signedoff?"<b>Signed off</b>":"Awaiting sign-off"):"Next: <b>"+(nx?TLABEL[nx]:"—")+"</b>"}</span>${j.payment?`<span>${j.payment.status==="paid"?"Paid":"Owed"} <b>${gbp(j.payment.pay)}</b></span>`:""}</div></article>`}).join("")}</div>`;
 }
+const hm=iso=>{const d=new Date(iso);return isNaN(d)?"":d.toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})};
+// "I'm on my way" asks roughly when they'll arrive; the resident gets the time on WhatsApp.
+function etaPicker(j,mode){
+  const act=mode==="go"?"enroute-go":"eta-save";
+  return `<div class="eta"><b>${mode==="go"?"I'm on my way – I'll arrive in about:":"New arrival time – in about:"}</b>
+    <div class="row">${[15,30,45,60,90].map(m=>`<button class="btn ${mode==="go"?"go":""}" data-act="${act}" data-eta="${m}" data-id="${esc(j.id)}" ${S.busy?"disabled":""}>${m<60?m+" min":m===60?"1 hr":"1½ hr"}</button>`).join("")}</div>
+    <div class="row"><label class="f" style="min-width:150px"><span>or at</span><input type="time" id="eta-at-${esc(j.id)}"></label><button class="btn" data-act="${act}" data-eta="at" data-id="${esc(j.id)}" ${S.busy?"disabled":""}>Set time</button>${mode==="eta"?`<button class="btn small" data-act="eta-cancel">Cancel</button>`:""}</div></div>`;
+}
 function steps(t){
   const nx=nextStep(t);
   return `<ol class="steps">${TRACK.filter(([k])=>k!=="parts"||t.parts).map(([k,l])=>`<li class="${t[k]?"done":(k===nx?"next":"")}"><b>${l}</b><small>${t[k]?fmtDT(t[k]):(k===nx?"next":"")}</small></li>`).join("")}</ol>`;
@@ -143,7 +151,9 @@ function viewMine(j){
    </article>
    <section class="panel"><div class="panel-h"><h2>Progress</h2></div><div class="panel-b">
      ${steps(t)}
-     <div class="row">${label?`<button class="btn go big" data-act="step" data-step="${nx}" data-id="${esc(j.id)}" ${S.busy?"disabled":""}>${label}</button>`:""}
+     ${nx==="enroute"?etaPicker(j,"go"):""}
+     ${t.enroute&&!t.onsite&&j.myEta?`<div class="callout"><div>Arriving around <b>${hm(j.myEta.eta)}</b> – the resident has been told.</div>${S.etaEdit===j.id?etaPicker(j,"eta"):`<button class="btn small" data-act="eta-edit" data-id="${esc(j.id)}">Running late or early? Change ETA</button>`}</div>`:""}
+     <div class="row">${label&&nx!=="enroute"?`<button class="btn go big" data-act="step" data-step="${nx}" data-id="${esc(j.id)}" ${S.busy?"disabled":""}>${label}</button>`:""}
      ${!t.done&&t.onsite&&!t.parts?`<button class="btn" data-act="step" data-step="parts" data-id="${esc(j.id)}">Waiting for parts</button>`:""}</div>
      ${nx==="booked"?'<p class="hint">Set your attend time below first.</p>':""}
    </div></section>
@@ -187,6 +197,13 @@ document.addEventListener("click",async ev=>{
       if(r&&r.role!=="reserve"){S.sel=id;S.tab="mine";render();window.scrollTo(0,0)}break}
     case "quote":await act(`/jobs/${id}/quote`,{price:v("qp-"+id),attendBy:v("qa-"+id),finishBy:v("qf-"+id),note:v("qn-"+id)},"Quote sent to the office");break;
     case "step":await act(`/jobs/${id}/step`,{step:t.dataset.step},(TLABEL[t.dataset.step]||"Updated")+" ✓");break;
+    case "enroute-go":case "eta-save":{
+      const eta=t.dataset.eta==="at"?v("eta-at-"+id):t.dataset.eta;
+      if(!eta){toast("Pick a time first");break}
+      const ok=t.dataset.act==="enroute-go"?await act(`/jobs/${id}/step`,{step:"enroute",eta},"On the way ✓ – resident told your ETA"):await act(`/jobs/${id}/eta`,{eta},"ETA updated – resident told");
+      if(ok){S.etaEdit=null;render()}break}
+    case "eta-edit":S.etaEdit=id;render();break;
+    case "eta-cancel":S.etaEdit=null;render();break;
     case "time":await act(`/jobs/${id}/time`,{attendBy:v("ka"),finishBy:v("kf")},"Timeframe saved");break;
     case "done":if(await act(`/jobs/${id}/done`,{text:v("kdone")},"Marked complete – the office will sign it off")){S.sel=null;S.tab="done";render()}break;
     case "note":if(await act(`/jobs/${id}/note`,{text:v("knote")},"Note sent")){}break;

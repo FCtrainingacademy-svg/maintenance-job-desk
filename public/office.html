@@ -194,6 +194,7 @@ function mergeServer(d,c){
   d.quotes=Object.assign({},d.quotes,c.quotes);
   d.track=Object.assign({},d.track,c.track);
   d.cnotes=Object.assign({},d.cnotes,c.cnotes);
+  d.etas=Object.assign({},d.etas,c.etas);
   if(c.alertLog)d.alertLog=c.alertLog;
   if(c.dispatch){d.dispatch=Object.assign({},d.dispatch||{});SERVER_D.forEach(k=>{if(k in c.dispatch)d.dispatch[k]=c.dispatch[k]})}
   CONTRACTOR_KEYS.forEach(k=>{if(!S.touched.has(k)&&k in c)d[k]=c[k]});
@@ -207,7 +208,7 @@ function timeline(j){
 
 /* ---------- render ---------- */
 function renderTabs(){
-  const tabs=[["jobs","Jobs"],["contractors","Contractors"],["contacts","Contacts"],["invoices","Invoices"],["payments","Contractor payments"],["settings","Settings"]];
+  const tabs=[["jobs","Jobs"],["live","Live board"],["contractors","Contractors"],["contacts","Contacts"],["invoices","Invoices"],["payments","Contractor payments"],["settings","Settings"]];
   $("#tabs").innerHTML=tabs.map(([k,l])=>`<button class="tab" role="tab" data-tab="${k}" aria-selected="${S.tab===k}">${l}</button>`).join("")
     +`<form method="post" action="/logout" style="display:inline"><button class="tab" type="submit">Log out</button></form>`;
 }
@@ -222,11 +223,54 @@ function render(){
   const m=$("#main");
   if(!S.loaded.jobs){m.innerHTML='<div class="empty">Loading…</div>';return}
   if(S.tab==="jobs")m.innerHTML=viewJobs();
+  else if(S.tab==="live")m.innerHTML=viewLive();
   else if(S.tab==="contractors")m.innerHTML=viewContractors();
   else if(S.tab==="contacts")m.innerHTML=viewContacts();
   else if(S.tab==="invoices")m.innerHTML=viewInvoices();
   else if(S.tab==="payments")m.innerHTML=viewPayments();
   else m.innerHTML=viewSettings();
+}
+
+/* ---------- live board: who's on the way, ETAs, who's late ---------- */
+const hmT=iso=>{const d=new Date(iso);return isNaN(d)?"—":d.toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})};
+const minsS=iso=>Math.round((Date.now()-new Date(iso))/60000);
+const dur=m=>m<60?m+" min":Math.floor(m/60)+" hr "+(m%60)+" min";
+function liveRows(){
+  const today=new Date().toDateString(),rows=[];
+  jobsArr().forEach(j=>{
+    const d=D(j),t=j.track||{},due=d.contractorAttendBy||j.scheduledAt||j.attendBy;
+    if(t.done||!OPEN.includes(j.status))return;
+    const people=(d.team&&d.team.length?d.team.map(x=>x.id):d.allocatedTo?[d.allocatedTo]:[]);
+    const etas=j.etas||{};
+    const isToday=due&&new Date(due).toDateString()===today;
+    if(!people.length){if(isToday)rows.push({j,id:"",stage:"Waiting for a contractor",due,late:due&&new Date(due)<new Date(),order:0});return}
+    people.forEach(id=>{
+      const e=etas[id];
+      if(!isToday&&!e&&!t.onsite)return;
+      let stage,late=false,lateBy=0,info="";
+      if(e&&e.arrivedAt){stage="On site";info="for "+dur(Math.max(0,minsS(e.arrivedAt)));const l=Math.round((new Date(e.arrivedAt)-new Date(e.eta))/60000);if(l>10)info+=` · arrived ${l} min after ETA`}
+      else if(e){stage="On the way";lateBy=minsS(e.eta);late=lateBy>5;info=late?`${lateBy} min past ETA`:`due in ${Math.max(0,-lateBy)} min`;if(e.changedAt)info+=" · ETA changed"}
+      else if(t.onsite){stage="On site";info="since "+hmT(t.onsite)}
+      else{stage=t.booked?"Booked":t.accepted?"Accepted":"Allocated";if(due){lateBy=minsS(due);late=lateBy>15;info=late?`${lateBy} min past attend time, not on the way`:"not set off yet"}}
+      rows.push({j,id,stage,eta:e&&!e.arrivedAt?e.eta:"",due,late,info,order:late?0:stage==="On the way"?1:stage==="On site"?3:2});
+    });
+  });
+  return rows.sort((a,b)=>a.order-b.order||String(a.due).localeCompare(String(b.due)));
+}
+function viewLive(){
+  const rows=liveRows(),late=rows.filter(r=>r.late).length,way=rows.filter(r=>r.stage==="On the way").length,on=rows.filter(r=>r.stage==="On site").length;
+  const tr=rows.map(r=>{const p=r.j.property||{};return `<tr class="click ${r.late?"late":""}" data-openjob="${esc(r.j.id)}">
+    <td class="mono">${esc(r.j.ref)}</td><td>${esc(p.address||"")}${p.postcode?", "+esc(p.postcode):""}<br><span class="hint">${esc(r.j.category||"")}</span></td>
+    <td>${r.id?esc(kName(r.id)):"—"}</td><td><b>${esc(r.stage)}</b></td><td class="num">${r.due?fmtDT(r.due):"—"}</td>
+    <td class="num"><b>${r.eta?hmT(r.eta):"—"}</b></td><td>${r.late?`<span class="late-tag">LATE</span> `:""}${esc(r.info||"")}</td></tr>`}).join("");
+  return `<div class="strip">
+   <div class="stat ${late?"alert":""}"><small>Running late</small><b>${late}</b></div>
+   <div class="stat"><small>On the way</small><b>${way}</b></div>
+   <div class="stat"><small>On site</small><b>${on}</b></div>
+   <div class="stat"><small>Today's visits</small><b>${rows.length}</b></div></div>
+  <div class="panel"><div class="panel-h"><h2>Live board</h2><span class="hint">Today's visits and anyone on the way. Updates by itself – late jobs go to the top.</span></div>
+  ${rows.length?`<div class="tablewrap"><table class="live"><thead><tr><th>Job</th><th>Property</th><th>Engineer</th><th>Now</th><th>Attend by</th><th>ETA</th><th></th></tr></thead><tbody>${tr}</tbody></table></div>`
+   :'<div class="empty">Nothing on today yet. Jobs show here once they\'re booked for today or an engineer taps "I\'m on my way".</div>'}</div>`;
 }
 
 function viewStrip(){
@@ -1207,6 +1251,7 @@ function makeDb(){
 function editing(){const a=document.activeElement;return a&&a!==document.body&&(a.tagName==="INPUT"||a.tagName==="TEXTAREA"||a.tagName==="SELECT")&&a.id!=="q"}
 const byId=arr=>Object.fromEntries((arr||[]).map(d=>[d.id,d]));
 S.db=makeDb();
+setInterval(()=>{if(S.tab==="live"&&!document.hidden&&!editing())render()},30000);
 S.db.on(all=>{
   S.contractors=byId(all.contractors);S.contacts=byId(all.contacts);
   const set=(all.settings||[]).find(d=>d.id==="business");if(set&&!(S.tab==="settings"&&editing()))S.settings=Object.assign({},DEF_SET,set);

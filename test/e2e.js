@@ -48,14 +48,21 @@ const ok = (c, m) => { assert(c, m); console.log("  ✓", m); };
   r = await req("POST", `/api/c/${winner}/jobs/j1/step`, { step: "booked" }, false); ok(r.status === 409, "can't confirm booking before giving a time");
   r = await req("POST", `/api/c/${winner}/jobs/j1/time`, { attendBy: "2026-10-10T01:00", finishBy: "2026-10-10T02:30" }, false); ok(r.status === 200, "timeframe saved");
   r = await req("POST", `/api/c/${loser}/jobs/j1/step`, { step: "onsite" }, false); ok(r.status === 409, "other contractor can't update someone else's job");
-  for (const st of ["enroute", "onsite"]) { r = await req("POST", `/api/c/${winner}/jobs/j1/step`, { step: st }, false); assert.strictEqual(r.status, 200); }
+  r = await req("POST", `/api/c/${winner}/jobs/j1/step`, { step: "enroute" }, false); ok(r.status === 409, "on the way needs an ETA");
+  r = await req("POST", `/api/c/${winner}/jobs/j1/step`, { step: "enroute", eta: "30" }, false); ok(r.status === 200, "on the way with a 30 min ETA");
+  r = await req("POST", `/api/c/${winner}/jobs/j1/eta`, { eta: "45" }, false); ok(r.status === 200, "ETA changed while on the way");
+  r = await req("GET", `/api/c/${winner}`, null, false); { const e = r.body.mine[0].myEta, m = (new Date(e.eta) - Date.now()) / 60000; ok(e && m > 40 && m < 46 && e.firstEta !== e.eta, "contractor sees the new ETA"); }
+  r = await req("POST", `/api/c/${winner}/jobs/j1/step`, { step: "onsite" }, false); ok(r.status === 200, "on site");
+  r = await req("POST", `/api/c/${winner}/jobs/j1/eta`, { eta: "10" }, false); ok(r.status === 409, "can't change ETA once on site");
   r = await req("POST", `/api/c/${winner}/jobs/j1/done`, { text: "Replaced elbow, tested" }, false); ok(r.status === 200, "marked complete");
   await new Promise(res => setTimeout(res, 300)); // alerts are sent in the background
   r = await req("GET", "/api/docs/jobs/j1");
   const jd = r.body.data;
   ok(jd.status === "complete" && jd.track.done && jd.findings === "Replaced elbow, tested", "office sees status, tracking and findings");
   const events = (jd.alertLog || []).map(e => e.event);
-  ok(["accepted", "booked", "enroute", "done"].every(e => events.includes(e)), "resident/agent updates logged for accepted, booked, on the way, complete");
+  ok(["accepted", "booked", "enroute", "eta", "done"].every(e => events.includes(e)), "resident/agent updates logged for accepted, booked, on the way, ETA change, complete");
+  ok(/should arrive around \d\d:\d\d/.test(jd.alertLog.find(e => e.event === "enroute").msg), "on the way message tells them the arrival time");
+  ok(jd.etas && Object.values(jd.etas)[0].arrivedAt, "arrival time recorded for the live board");
   ok(jd.alertLog.every(e => e.to.some(t => t.kind === "resident") && e.to.some(t => t.kind === "issuer")), "updates went to resident and agent");
   r = await req("POST", "/api/jobs/j1/alert", { event: "custom", text: "Engineer running late" }); ok(r.body.sent.length === 2, "custom update to resident + agent");
 

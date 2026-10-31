@@ -119,7 +119,8 @@ cr.get("/", wrap(async (req, res) => {
 const act = fn => wrap(async (req, res) => { const r = await fn(req.contractor, req.params.id, req.body || {}); res.status(r.ok ? 200 : 409).json(r.ok ? { ok: true, role: r.role || "" } : { error: r.error === "QUOTE" ? "This job needs a quote." : r.error }); });
 cr.post("/jobs/:id/accept", act((c, id) => dispatch.accept(c, id, "app")));
 cr.post("/jobs/:id/quote", act((c, id, b) => dispatch.quote(c, id, b)));
-cr.post("/jobs/:id/step", act((c, id, b) => dispatch.step(c, id, b.step)));
+cr.post("/jobs/:id/step", act((c, id, b) => dispatch.step(c, id, b.step, b.eta)));
+cr.post("/jobs/:id/eta", act((c, id, b) => dispatch.updateEta(c, id, b.eta)));
 cr.post("/jobs/:id/time", act((c, id, b) => dispatch.timeframe(c, id, b.attendBy, b.finishBy)));
 cr.post("/jobs/:id/done", act((c, id, b) => dispatch.done(c, id, b.text)));
 cr.post("/jobs/:id/note", act((c, id, b) => dispatch.note(c, id, b.text)));

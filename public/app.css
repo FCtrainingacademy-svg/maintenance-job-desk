@@ -193,3 +193,11 @@ body{margin:0;min-height:100vh}
 img{max-width:100%}
 .wrap{padding-top:max(14px,env(safe-area-inset-top))}
 a{color:var(--accent)}
+/* ETA picker (contractor) and live board (office) */
+.eta{background:var(--accent-soft);border-radius:var(--r);padding:10px 12px;display:grid;gap:8px}
+.live{width:100%;border-collapse:collapse}
+.live th,.live td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+.live th{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+.live tr.late td{background:#fdecea}
+.live .late-tag{color:#b3261e;font-weight:700}
+@media (prefers-color-scheme:dark){.live tr.late td{background:#3a1d1b}.live .late-tag{color:#ff8a80}}
