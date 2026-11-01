@@ -190,6 +190,16 @@ const activeK=()=>Object.values(S.contractors).filter(k=>k.active!==false).sort(
 const coversTrade=(k,cat)=>!cat||!(k.trades||[]).length||(k.trades||[]).includes(cat);
 function recipientsFor(j){const d=D(j);return d.sendTo==="pick"?(d.picked||[]).filter(id=>S.contractors[id]):activeK().filter(k=>coversTrade(k,j.category)).map(k=>k.id)}
 function nextStep(j){const t=j.track||{};for(const [k] of TRACK){if(k==="posted"||k==="parts")continue;if(!t[k])return k}return null}
+// Engineers add parts and the store order marks lines "ordered" on the server; keep those when the office saves.
+const newMid=()=>"m"+Date.now().toString(36)+Math.random().toString(36).slice(2,8);
+function mergeMats(mine,srv,touched){
+  if(!touched)return clone(srv);
+  const by=Object.fromEntries(srv.filter(m=>m.mid).map(m=>[m.mid,m]));
+  const out=mine.map(m=>{const x=m.mid&&by[m.mid];return x&&x.order&&!m.order?{...m,state:x.state,order:x.order,unit:x.unit}:m});
+  const have=new Set(mine.map(m=>m.mid).filter(Boolean)),gone=S.delMats||new Set();
+  srv.forEach(m=>{if(m.mid&&!have.has(m.mid)&&!gone.has(m.mid))out.push(m)});
+  return out;
+}
 function mergeServer(d,c){
   d.quotes=Object.assign({},d.quotes,c.quotes);
   d.track=Object.assign({},d.track,c.track);
@@ -198,6 +208,8 @@ function mergeServer(d,c){
   if(c.alertLog)d.alertLog=c.alertLog;
   if(c.dispatch){d.dispatch=Object.assign({},d.dispatch||{});SERVER_D.forEach(k=>{if(k in c.dispatch)d.dispatch[k]=c.dispatch[k]})}
   CONTRACTOR_KEYS.forEach(k=>{if(!S.touched.has(k)&&k in c)d[k]=c[k]});
+  if(c.kpsOrders)d.kpsOrders=c.kpsOrders;
+  d.materials=mergeMats(d.materials||[],c.materials||[],S.touched.has("materials"));
   return d;
 }
 function timeline(j){
@@ -229,6 +241,30 @@ function render(){
   else if(S.tab==="invoices")m.innerHTML=viewInvoices();
   else if(S.tab==="payments")m.innerHTML=viewPayments();
   else m.innerHTML=viewSettings();
+}
+
+/* ---------- K's Plumbing Store: search, approve & order ---------- */
+const KOSTATE={awaiting_payment:"Awaiting payment",paid:"Paid – being packed",dispatched:"Dispatched",cancelled:"Cancelled"};
+const KHOW={collect:"Collect from shop",property:"Deliver to job address",engineer:"Deliver to engineer"};
+function kpsPanel(j){
+  if(!(S.kps&&S.kps.enabled))return '<p class="hint">Link K\'s Plumbing Store (KPS_API_KEY) to search its catalogue and order from here.</p>';
+  const ro=!S.canWrite,k=S.kres&&S.kres.job===j.id?S.kres:null;
+  const wait=(j.materials||[]).filter(m=>m.code&&/k'?s plumbing/i.test(m.supplier||"")&&["need","requested"].includes(m.state||"need")&&n(m.qty)>0);
+  const tot=wait.reduce((a,m)=>a+n(m.qty)*n(m.unit),0),req=(j.materials||[]).filter(m=>m.state==="requested").length;
+  const meth=S.kMethod||"collect";
+  const res=k?k.items.map(p=>`<tr><td>${esc(p.name)}<div class="hint mono">${esc(p.code)} · ${esc(p.category)}</div></td><td class="r num">${gbp(p.price)}</td><td style="width:70px"><input type="number" min="1" value="1" id="kq-${esc(p.code)}"></td><td style="width:70px"><button class="btn small" data-act="kps-add" data-code="${esc(p.code)}" ${ro?"disabled":""}>Add</button></td></tr>`).join(""):"";
+  const orders=(j.kpsOrders||[]).map(o=>`<tr><td class="mono">${esc(o.ref)}</td><td>${fmtDT(o.at)}</td><td>${esc(KHOW[o.method]||"")}${o.method!=="collect"&&o.address?`<div class="hint">${esc(o.address)}</div>`:""}</td><td><span class="pill ${o.status==="dispatched"?"s-paid":o.status==="cancelled"?"late":"d-open"}">${esc(KOSTATE[o.status]||o.status)}</span></td><td class="r num">${gbp(o.total)}</td><td>${o.payUrl&&o.status==="awaiting_payment"?`<a class="btn small" href="${esc(o.payUrl)}" target="_blank" rel="noopener">Pay</a>`:""}</td></tr>`).join("");
+  return `<div class="kps-box" style="display:grid;gap:10px;margin:10px 0">
+    ${req?`<div class="banner" style="margin:0">${req} part${req>1?"s":""} requested by the engineer – check them below, then approve.</div>`:""}
+    ${wait.length?`<div class="callout"><b>Approve &amp; order ${wait.length} item${wait.length>1?"s":""} from K's Plumbing Store – about ${gbp(tot)}</b>
+      <div class="choice">${[["collect","Engineer collects from the shop"],["property","Deliver to the job address"],["engineer","Deliver to the engineer"]].map(([v,l])=>`<label><input type="radio" name="kmeth" data-kmeth="${v}" ${meth===v?"checked":""}> ${l}</label>`).join("")}</div>
+      ${meth==="engineer"?'<label class="f"><span>Engineer\'s delivery address</span><input id="kps-addr" placeholder="Address and postcode"></label>':""}
+      <div class="row"><button class="btn primary" data-act="kps-order" ${ro?"disabled":""}>Approve &amp; order</button><span class="hint">Placed on your K's Plumbing Store trade account and invoiced like any order. The engineer gets a WhatsApp with where to get the parts.</span></div></div>`:""}
+    ${orders?`<div class="tablewrap"><table class="lines"><thead><tr><th>KPS order</th><th>Placed</th><th>Delivery</th><th>Status</th><th class="r">Total</th><th></th></tr></thead><tbody>${orders}</tbody></table></div><div><button class="btn small" data-act="kps-refresh">Refresh order status</button></div>`:""}
+
+    <div class="row"><input id="kps-q" placeholder="Search K's Plumbing Store – e.g. 22mm tee, PRV, TRV" value="${esc(k?k.q:"")}" style="flex:1;min-width:220px"><button class="btn small" data-act="kps-search">Search</button>${k?'<button class="btn small" data-act="kps-clear">Clear</button>':""}</div>
+    ${k?(k.items.length?`<div class="tablewrap"><table class="lines"><thead><tr><th>Product</th><th class="r">Trade £</th><th>Qty</th><th></th></tr></thead><tbody>${res}</tbody></table></div>`:'<p class="hint">Nothing found – try fewer words.</p>'):""}
+  </div>`;
 }
 
 /* ---------- live board: who's on the way, ETAs, who's late ---------- */
@@ -471,11 +507,11 @@ function viewSheet(){
      <td><input data-path="residents.${i}.notes" value="${esc(r.notes)}" placeholder="e.g. works nights, has dog"></td>
      <td><button class="btn small danger" data-act="del-row" data-list="residents" data-i="${i}" aria-label="Remove resident">✕</button></td></tr>`).join("");
   const mats=(j.materials||[]).map((m,i)=>`<tr>
-     <td><input data-path="materials.${i}.item" value="${esc(m.item)}" placeholder="e.g. 15mm compression elbow"></td>
+     <td><input data-path="materials.${i}.item" value="${esc(m.item)}" placeholder="e.g. 15mm compression elbow">${m.code||m.requestedBy||m.order?`<div class="hint">${[m.code&&"KPS "+esc(m.code),m.requestedBy&&"requested by "+esc(m.requestedBy),m.order&&"order "+esc(m.order)].filter(Boolean).join(" · ")}</div>`:""}</td>
      <td style="width:70px"><input data-path="materials.${i}.qty" type="number" min="0" step="any" value="${esc(m.qty)}"></td>
      <td style="width:100px"><input data-path="materials.${i}.unit" type="number" min="0" step="0.01" value="${esc(m.unit)}" placeholder="0.00"></td>
      <td style="width:160px"><input data-path="materials.${i}.supplier" value="${esc(m.supplier)}" list="suppliers"></td>
-     <td style="width:120px"><select data-path="materials.${i}.state">${opts([["need","To order"],["ordered","Ordered"],["have","On van / collected"],["used","Fitted"]],m.state||"need")}</select></td>
+     <td style="width:120px"><select data-path="materials.${i}.state">${opts([["requested","Requested by engineer"],["need","To order"],["ordered","Ordered"],["have","On van / collected"],["used","Fitted"]],m.state||"need")}</select></td>
      <td class="r num" style="width:80px">${gbp(n(m.qty)*n(m.unit))}</td>
      <td style="width:40px"><button class="btn small danger" data-act="del-row" data-list="materials" data-i="${i}" aria-label="Remove material">✕</button></td></tr>`).join("");
   const lab=(j.labour||[]).map((l,i)=>`<tr>
@@ -573,7 +609,8 @@ function viewSheet(){
      <div class="sec-h"><span class="n">8</span><h3>Materials needed</h3><div class="act"><button class="btn small" data-act="add-row" data-list="materials">+ Material</button></div></div>
      <div class="kps"><strong>${KPS.name}</strong><span>Preferred supplier · WhatsApp <span class="mono">${KPS.wa}</span></span>
        <a class="btn small" href="${KPS.web}" target="_blank" rel="noopener">Open shop</a>
-       <button class="btn small" data-act="copy-order" ${kpsCount?"":"disabled"}>Copy order (${kpsCount} to order)</button></div>
+       ${S.kps&&S.kps.enabled?"":`<button class="btn small" data-act="copy-order" ${kpsCount?"":"disabled"}>Copy order (${kpsCount} to order)</button>`}</div>
+     ${kpsPanel(j)}
      ${mats?`<div class="tablewrap"><table class="lines"><thead><tr><th>Item</th><th>Qty</th><th>Unit cost £</th><th>Supplier</th><th>Status</th><th class="r">Cost</th><th></th></tr></thead><tbody>${mats}</tbody></table></div>`:'<p class="hint">No materials yet. List what the engineer needs; each line defaults to K\'s Plumbing Store.</p>'}
    </section>
 
@@ -1065,11 +1102,24 @@ document.addEventListener("click",async ev=>{
       const first=document.querySelector('[data-path="description"]');if(first)first.focus();break}
     case "save":saveJob();break;
     case "add-row":{const L=t.dataset.list;j[L]=j[L]||[];
-      j[L].push(L==="materials"?{item:"",qty:1,unit:"",supplier:KPS.name,state:"need"}:L==="labour"?{desc:"",hours:1,rate:S.settings.labourRate}:{name:"",phone:""});
+      j[L].push(L==="materials"?{mid:newMid(),item:"",qty:1,unit:"",supplier:KPS.name,state:"need"}:L==="labour"?{desc:"",hours:1,rate:S.settings.labourRate}:{name:"",phone:""});
       markDirty(L);render();const rows=document.querySelectorAll(`[data-path^="${L}.${j[L].length-1}."]`);if(rows[0])rows[0].focus();break}
-    case "del-row":j[t.dataset.list].splice(+t.dataset.i,1);markDirty(t.dataset.list);render();break;
+    case "del-row":{const x=j[t.dataset.list][+t.dataset.i];if(t.dataset.list==="materials"&&x&&x.mid){S.delMats=S.delMats||new Set();S.delMats.add(x.mid)}}j[t.dataset.list].splice(+t.dataset.i,1);markDirty(t.dataset.list);render();break;
     case "add-log":{const i=$("#lognote");if(!i.value.trim())break;logEntry(i.value.trim());markDirty("log");render();break}
     case "copy-sheet":copy(jobSheetText(j),"job text");break;
+    case "kps-search":{const q=($("#kps-q")||{}).value||"";if(q.trim().length<2){toast("Type at least 2 letters");break}
+      try{const r=await S.db.api("GET","/api/kps/search?q="+encodeURIComponent(q.trim()));S.kres={job:j.id,q:q.trim(),items:r.results||[]}}catch(e){toast(e.message||"Search failed")}render();break}
+    case "kps-clear":S.kres=null;render();break;
+    case "kps-add":{const p=(S.kres.items||[]).find(x=>x.code===t.dataset.code);if(!p)break;const qty=n(($("#kq-"+p.code)||{}).value)||1;
+      j.materials=j.materials||[];const ex=j.materials.find(m=>m.code===p.code&&["need","requested"].includes(m.state||"need"));
+      if(ex)ex.qty=n(ex.qty)+qty;else j.materials.push({mid:newMid(),item:p.name,code:p.code,qty,unit:p.price,supplier:KPS.name,state:"need"});
+      markDirty("materials");toast(`Added ${qty} × ${p.name}`);render();break}
+    case "kps-order":{if(S.dirty&&!(await saveJob()))break;
+      const body={method:S.kMethod||"collect",address:(($("#kps-addr")||{}).value||"").trim()};
+      t.disabled=true;
+      try{const r=await S.db.api("POST",`/api/jobs/${j.id}/kps-order`,body);toast(r.repeat?"Already ordered – "+r.order.ref:`Ordered ${r.order.ref} – £${Number(r.order.total).toFixed(2)}. Engineer told.`);S.db.refresh()}
+      catch(e){toast(e.message||"Order failed");t.disabled=false}break}
+    case "kps-refresh":try{await S.db.api("POST",`/api/jobs/${j.id}/kps-refresh`);S.db.refresh();toast("Order status updated")}catch(e){toast(e.message)}break;
     case "copy-order":copy(kpsOrderText(j),"K's Plumbing Store order");break;
     case "copy-broadcast":copy(broadcastText(j),"WhatsApp group message");break;
     case "dl-sheet":saveFile(j.ref+" job sheet.html",jobSheetDoc(j));break;
@@ -1205,8 +1255,10 @@ function onField(ev){
 }
 document.addEventListener("input",ev=>{if(ev.target.dataset&&ev.target.dataset.rpath){onRate(ev.target,false);return}if(ev.target.tagName!=="SELECT"&&ev.target.type!=="checkbox"&&ev.target.type!=="radio")onField(ev)});
 function onRate(el,changed){const v=el.type==="checkbox"?el.checked:(el.type==="number"?(el.value===""?"":n(el.value)):el.value);setPath(S.rates,el.dataset.rpath,v);S.ratesDirty=true;if(changed&&(el.tagName==="SELECT"||el.type==="checkbox"))render()}
+document.addEventListener("keydown",ev=>{if(ev.key==="Enter"&&ev.target.id==="kps-q"){ev.preventDefault();const b=document.querySelector('[data-act="kps-search"]');b&&b.click()}});
 document.addEventListener("change",ev=>{
   const el=ev.target;
+  if(el.dataset&&el.dataset.kmeth){S.kMethod=el.dataset.kmeth;render();return}
   if(el.id==="pickIssuer"||el.id==="pickBill"){const k=S.contacts[el.value];if(!k)return;const key=el.id==="pickIssuer"?"issuer":"bill";
     S.draft[key]=Object.assign({},S.draft[key],{contactId:k.id,name:k.name||"",role:k.role||"",company:k.company||"",phone:k.phone||"",email:k.email||"",address:k.address||""});markDirty(key);render();return}
   if(el.id==="billSame"){S.draft.billSame=el.checked;if(!el.checked&&!S.draft.bill)S.draft.bill={};markDirty("billSame");render();return}
@@ -1233,7 +1285,7 @@ function makeDb(){
     try{
       if(!force&&last!==null){const v=(await api("GET","/api/version")).v;if(v===last)return}
       const all=await api("GET","/api/all");last=all.v;
-      S.wa=all.wa;S.diary=all.diary||{enabled:false};S.baseUrl=all.baseUrl;S.outbox=all.outbox||[];S.noDb=all.db===false&&location.hostname!=="localhost";
+      S.wa=all.wa;S.kps=all.kps||{enabled:false};S.diary=all.diary||{enabled:false};S.baseUrl=all.baseUrl;S.outbox=all.outbox||[];S.noDb=all.db===false&&location.hostname!=="localhost";
       listeners.forEach(fn=>fn(all));
     }catch(e){if(S.offline)render()}
   }

@@ -11,6 +11,8 @@ const { makeDispatch } = require("./lib/dispatch");
 const { makeDiarySync } = require("./lib/diary-sync");
 const { makeIntake } = require("./lib/intake");
 const profile = require("./lib/profile");
+const kps = require("./lib/kps");
+const { makeMaterials } = require("./lib/materials");
 
 const app = express();
 app.set("trust proxy", 1);
@@ -23,6 +25,7 @@ const baseUrl = () => (process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL
 const dispatch = makeDispatch(store, wa, baseUrl, makeDiarySync);
 const diary = makeDiarySync();
 const intake = makeIntake(store, wa, dispatch, baseUrl);
+const materials = makeMaterials(store, wa, dispatch);
 const PORT = Number(process.env.PORT) || 3000;
 const OFFICE_COLS = COLLECTIONS.filter(c => c !== "outbox" && c !== "intake");
 const SAFE_ID = /^[A-Za-z0-9_\-.~:@+]{1,120}$/;
@@ -49,7 +52,7 @@ app.get("/", auth.requireOffice, (_req, res) => res.sendFile(pub("office.html"))
 const office = express.Router();
 office.use(auth.requireOffice);
 office.get("/all", wrap(async (_req, res) => {
-  const out = { v: await store.version(), wa: { enabled: wa.enabled() }, diary: { enabled: diary.enabled() }, baseUrl: baseUrl(), db: !!process.env.DATABASE_URL };
+  const out = { v: await store.version(), wa: { enabled: wa.enabled() }, diary: { enabled: diary.enabled() }, kps: { enabled: kps.enabled() }, baseUrl: baseUrl(), db: !!process.env.DATABASE_URL };
   for (const c of OFFICE_COLS) out[c] = await store.list(c);
   out.outbox = (await store.list("outbox")).sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 30);
   res.json(out);
@@ -86,6 +89,10 @@ office.post("/jobs/:id/alert", wrap(async (req, res) => {
   const sent = await dispatch.alertParties(j, ev, txt);
   res.json({ sent, simulated: !wa.enabled() });
 }));
+// K's Plumbing Store: catalogue search, approve & order a job's materials, refresh order status.
+office.get("/kps/search", wrap(async (req, res) => { const r = await kps.search(req.query.q); res.status(r.error ? 502 : 200).json(r); }));
+office.post("/jobs/:id/kps-order", wrap(async (req, res) => { const r = await materials.placeOrder(req.params.id, req.body || {}); res.status(r.error ? 409 : 200).json(r); }));
+office.post("/jobs/:id/kps-refresh", wrap(async (req, res) => { await materials.refresh([req.params.id]); res.json({ ok: true }); }));
 office.post("/contractors/:id/rotate", wrap(async (req, res) => {
   const token = crypto.randomBytes(18).toString("base64url");
   const r = await store.withLock("contractors", req.params.id, async cur => cur ? { doc: { ...cur, token } } : { missing: true });
@@ -123,6 +130,8 @@ cr.post("/jobs/:id/step", act((c, id, b) => dispatch.step(c, id, b.step, b.eta))
 cr.post("/jobs/:id/eta", act((c, id, b) => dispatch.updateEta(c, id, b.eta)));
 cr.post("/jobs/:id/time", act((c, id, b) => dispatch.timeframe(c, id, b.attendBy, b.finishBy)));
 cr.post("/jobs/:id/done", act((c, id, b) => dispatch.done(c, id, b.text)));
+cr.get("/kps/search", wrap(async (req, res) => { const r = await kps.search(req.query.q); res.status(r.error ? 502 : 200).json(r); }));
+cr.post("/jobs/:id/materials", act((c, id, b) => materials.request(c, id, b)));
 cr.post("/jobs/:id/note", act((c, id, b) => dispatch.note(c, id, b.text)));
 cr.post("/jobs/:id/handback", act((c, id) => dispatch.handback(c, id)));
 cr.get("/profile", wrap(async (req, res) => {
@@ -214,5 +223,7 @@ app.post("/webhook", (req, res) => {
   })();
 });
 
+// Check K's Plumbing Store orders that aren't dispatched yet every 10 minutes.
+setInterval(() => materials.refresh().catch(e => console.error("kps refresh", e.message)), 10 * 60 * 1000).unref();
 store.init().then(() => app.listen(PORT, () => console.log(`Job desk on :${PORT} (${process.env.DATABASE_URL ? "Postgres" : "local file"} store, WhatsApp ${wa.enabled() ? "live" : "simulated"}, diary sync ${diary.enabled() ? "on" : "off"})`)));
 module.exports = app;

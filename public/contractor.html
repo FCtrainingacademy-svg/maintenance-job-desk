@@ -113,6 +113,26 @@ function etaPicker(j,mode){
     <div class="row">${[15,30,45,60,90].map(m=>`<button class="btn ${mode==="go"?"go":""}" data-act="${act}" data-eta="${m}" data-id="${esc(j.id)}" ${S.busy?"disabled":""}>${m<60?m+" min":m===60?"1 hr":"1½ hr"}</button>`).join("")}</div>
     <div class="row"><label class="f" style="min-width:150px"><span>or at</span><input type="time" id="eta-at-${esc(j.id)}"></label><button class="btn" data-act="${act}" data-eta="at" data-id="${esc(j.id)}" ${S.busy?"disabled":""}>Set time</button>${mode==="eta"?`<button class="btn small" data-act="eta-cancel">Cancel</button>`:""}</div></div>`;
 }
+const MSTATE={requested:"Requested – waiting for office",need:"Approved – to order",ordered:"Ordered",have:"On van / collected",used:"Fitted"};
+const OSTATE={awaiting_payment:"Ordered – awaiting payment",paid:"Paid – being packed",dispatched:"Dispatched",cancelled:"Cancelled"};
+const OHOW={collect:"Collect from the shop",property:"Delivered to the job address",engineer:"Delivered to you"};
+// Parts: what's on the job, K's Plumbing Store orders, and a search to request more.
+function partsPanel(j){
+  const done=j.track.done;
+  const list=j.materials.map(m=>`<li>${esc(m.qty||1)} × ${esc(m.item)} <span class="pill ${m.state==="requested"?"d-open":""}" style="font-size:11px">${esc(MSTATE[m.state||"need"]||"")}</span></li>`).join("");
+  const orders=(j.kpsOrders||[]).map(o=>`<div class="callout"><div><b>K's Plumbing Store order ${esc(o.ref)}</b> – ${esc(OSTATE[o.status]||o.status)}</div><div class="hint">${esc(OHOW[o.method]||"")}${o.address?": "+esc(o.address):""}</div></div>`).join("");
+  const res=(S.kres&&S.kres.job===j.id?S.kres.items:[]).map(p=>`<li class="row" style="justify-content:space-between;gap:8px"><span>${esc(p.name)} <span class="hint mono">${esc(p.code)}</span></span>
+     <span class="row" style="gap:6px"><input type="number" min="1" value="1" id="kq-${esc(p.code)}" style="width:60px"><button class="btn small go" data-act="part-add" data-id="${esc(j.id)}" data-code="${esc(p.code)}" data-name="${esc(p.name)}">Request</button></span></li>`).join("");
+  return `<section class="panel"><div class="panel-h"><h2>Parts</h2></div><div class="panel-b">
+    ${list?`<ul style="margin:0;padding-left:18px;display:grid;gap:4px">${list}</ul>`:'<p class="hint">No parts listed for this job.</p>'}
+    ${orders}
+    ${done?"":`<div class="eta"><b>Need parts? Search K's Plumbing Store</b>
+      <div class="row"><input id="kq-${esc(j.id)}" placeholder="e.g. 15mm elbow, PRV, filling loop" value="${esc(S.kres&&S.kres.job===j.id?S.kres.q:"")}" style="flex:1;min-width:180px"><button class="btn" data-act="part-search" data-id="${esc(j.id)}">Search</button></div>
+      ${S.kres&&S.kres.job===j.id?(res?`<ul style="list-style:none;margin:0;padding:0;display:grid;gap:6px">${res}</ul>`:'<p class="hint">Nothing found. Try fewer words, or add it as a note below.</p>'):""}
+      <div class="row"><input id="kfree-${esc(j.id)}" placeholder="Not in the shop? Describe the part" style="flex:1;min-width:180px"><button class="btn small" data-act="part-free" data-id="${esc(j.id)}">Request</button></div>
+      <p class="hint">The office approves and orders requested parts, then you'll get a WhatsApp saying where to collect them or where they're being delivered.</p></div>`}
+  </div></section>`;
+}
 function steps(t){
   const nx=nextStep(t);
   return `<ol class="steps">${TRACK.filter(([k])=>k!=="parts"||t.parts).map(([k,l])=>`<li class="${t[k]?"done":(k===nx?"next":"")}"><b>${l}</b><small>${t[k]?fmtDT(t[k]):(k===nx?"next":"")}</small></li>`).join("")}</ol>`;
@@ -131,7 +151,7 @@ const fmtD=iso=>{if(!iso)return"—";const d=new Date(iso);return isNaN(d)?esc(i
 function viewMine(j){
   const p=j.property,t=j.track,nx=nextStep(t);
   const res=j.residents.map(r=>`<div><b>${esc(r.name)}</b> <a class="mono" href="tel:${esc(String(r.phone||"").replace(/\s/g,""))}">${esc(r.phone)}</a>${r.notes?` <span class="hint">${esc(r.notes)}</span>`:""}</div>`).join("");
-  const mats=j.materials.map(m=>`<li>${esc(m.qty||1)} × ${esc(m.item)} <span class="hint">${esc(m.supplier||"")}</span></li>`).join("");
+
   const label={booked:"Confirm booking",enroute:"I'm on my way",onsite:"I'm on site"}[nx];
   const maps="https://www.google.com/maps/search/?api=1&query="+encodeURIComponent([p.address,p.postcode].filter(Boolean).join(", "));
   return `<div class="board">
@@ -144,7 +164,7 @@ function viewMine(j){
     <div class="meta">${p.access?`<span>Access <b>${esc(p.access)}</b>${p.keyInfo?" · "+esc(p.keyInfo):""}</span>`:""}${p.parking?`<span>Parking <b>${esc(p.parking)}</b></span>`:""}${p.stopcock?`<span>Stopcock <b>${esc(p.stopcock)}</b></span>`:""}</div>
     ${p.accessNotes?`<div class="hint">${esc(p.accessNotes)}</div>`:""}
     ${res?`<div class="callout"><span class="hint">RESIDENTS</span>${res}</div>`:""}
-    ${mats?`<div><span class="hint">MATERIALS</span><ul style="margin:4px 0 0;padding-left:18px">${mats}</ul><div class="hint">Order from K's Plumbing Store on WhatsApp: 07488 287396</div></div>`:""}
+
     ${j.contact?`<div class="callout"><span class="hint">CONTACT FOR THIS JOB</span><div><b>${esc(j.contact.name)}</b>${j.contact.phone?` <a class="mono" href="tel:${esc(String(j.contact.phone).replace(/\s/g,""))}">${esc(j.contact.phone)}</a>`:""}</div></div>`:""}
     ${(j.team||[]).length?`<div class="hint">Also on this job: <b>${(j.team||[]).map(esc).join(", ")}</b></div>`:""}
     ${j.officePhone?`<div class="hint">Office: <a class="mono" href="tel:${esc(j.officePhone.replace(/\s/g,""))}">${esc(j.officePhone)}</a></div>`:""}
@@ -157,6 +177,7 @@ function viewMine(j){
      ${!t.done&&t.onsite&&!t.parts?`<button class="btn" data-act="step" data-step="parts" data-id="${esc(j.id)}">Waiting for parts</button>`:""}</div>
      ${nx==="booked"?'<p class="hint">Set your attend time below first.</p>':""}
    </div></section>
+   ${partsPanel(j)}
    <section class="panel"><div class="panel-h"><h2>Your timeframe</h2></div><div class="panel-b">
      <div class="g"><label class="f"><span>I'll attend</span><input type="datetime-local" id="ka" value="${esc(j.contractorAttendBy)}"></label>
      <label class="f"><span>Expect to finish</span><input type="datetime-local" id="kf" value="${esc(j.contractorFinishBy)}"></label></div>
@@ -202,6 +223,10 @@ document.addEventListener("click",async ev=>{
       if(!eta){toast("Pick a time first");break}
       const ok=t.dataset.act==="enroute-go"?await act(`/jobs/${id}/step`,{step:"enroute",eta},"On the way ✓ – resident told your ETA"):await act(`/jobs/${id}/eta`,{eta},"ETA updated – resident told");
       if(ok){S.etaEdit=null;render()}break}
+    case "part-search":{const q=v("kq-"+id);if(q.length<2){toast("Type at least 2 letters");break}
+      try{const r=await api("GET","/kps/search?q="+encodeURIComponent(q));S.kres={job:id,q,items:r.results||[]}}catch(e){toast(e.message)}render();break}
+    case "part-add":{const qty=v("kq-"+t.dataset.code)||1;if(await act(`/jobs/${id}/materials`,{code:t.dataset.code,name:t.dataset.name,qty},"Requested – the office will approve it")){S.kres=null;render()}break}
+    case "part-free":{const name=v("kfree-"+id);if(!name){toast("Describe the part first");break}await act(`/jobs/${id}/materials`,{name,qty:1},"Requested – the office will approve it");break}
     case "eta-edit":S.etaEdit=id;render();break;
     case "eta-cancel":S.etaEdit=null;render();break;
     case "time":await act(`/jobs/${id}/time`,{attendBy:v("ka"),finishBy:v("kf")},"Timeframe saved");break;
@@ -213,7 +238,7 @@ document.addEventListener("click",async ev=>{
     case "handback-yes":if(await act(`/jobs/${id}/handback`,{},"Job handed back")){S.sel=null;S.confirmBack=null;S.tab="available";render()}break;
   }
 });
-document.addEventListener("keydown",ev=>{if(ev.key==="Enter"){const o=ev.target.closest("[data-open]");if(o){S.sel=o.dataset.open;render()}if(ev.target.id==="knote")document.querySelector('[data-act="note"]').click()}});
+document.addEventListener("keydown",ev=>{if(ev.key==="Enter"){const o=ev.target.closest("[data-open]");if(o){S.sel=o.dataset.open;render()}if(ev.target.id==="knote")document.querySelector('[data-act="note"]').click();if(/^kq-/.test(ev.target.id)&&ev.target.type!=="number"){const b=document.querySelector('[data-act="part-search"]');b&&b.click()}}});
 document.addEventListener("visibilitychange",()=>{if(!document.hidden)load()});
 load();
 setInterval(()=>{if(!document.hidden)load()},15000);
