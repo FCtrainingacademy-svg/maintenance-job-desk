@@ -9,7 +9,8 @@
   },
   "scripts": {
     "start": "node server.js",
-    "test": "node test/e2e.js"
+    "test": "node test/e2e.js",
+    "test:training": "node test/training.js"
   },
   "license": "ISC",
   "dependencies": {

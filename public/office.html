@@ -222,6 +222,7 @@ function timeline(j){
 function renderTabs(){
   const tabs=[["jobs","Jobs"],["live","Live board"],["contractors","Contractors"],["contacts","Contacts"],["invoices","Invoices"],["payments","Contractor payments"],["settings","Settings"]];
   $("#tabs").innerHTML=tabs.map(([k,l])=>`<button class="tab" role="tab" data-tab="${k}" aria-selected="${S.tab===k}">${l}</button>`).join("")
+    +`<a class="tab" href="/training" style="text-decoration:none">FC Training jobs ↗</a>`
     +`<form method="post" action="/logout" style="display:inline"><button class="tab" type="submit">Log out</button></form>`;
 }
 function render(){

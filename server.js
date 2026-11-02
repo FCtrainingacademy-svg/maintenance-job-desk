@@ -4,7 +4,7 @@ process.env.TZ = process.env.TZ || "Europe/London";
 const express = require("express");
 const path = require("path");
 const crypto = require("crypto");
-const { makeStore, deepMerge, COLLECTIONS } = require("./lib/store");
+const { makeStore, deepMerge, COLLECTIONS, TRAINING_COLLECTIONS } = require("./lib/store");
 const auth = require("./lib/auth");
 const { makeWhatsApp } = require("./lib/whatsapp");
 const { makeDispatch } = require("./lib/dispatch");
@@ -13,6 +13,7 @@ const { makeIntake } = require("./lib/intake");
 const profile = require("./lib/profile");
 const kps = require("./lib/kps");
 const { makeMaterials } = require("./lib/materials");
+const { makeTraining } = require("./lib/training");
 
 const app = express();
 app.set("trust proxy", 1);
@@ -26,8 +27,11 @@ const dispatch = makeDispatch(store, wa, baseUrl, makeDiarySync);
 const diary = makeDiarySync();
 const intake = makeIntake(store, wa, dispatch, baseUrl);
 const materials = makeMaterials(store, wa, dispatch);
+// FC Training Academy's own WhatsApp number (training jobs for learners). Same Meta token unless TRAINING_WHATSAPP_TOKEN is set.
+const waT = makeWhatsApp(store, { line: "training", phoneId: () => process.env.TRAINING_WHATSAPP_PHONE_ID, token: () => process.env.TRAINING_WHATSAPP_TOKEN || process.env.WHATSAPP_TOKEN });
+const training = makeTraining(store, waT, baseUrl, makeDiarySync);
 const PORT = Number(process.env.PORT) || 3000;
-const OFFICE_COLS = COLLECTIONS.filter(c => c !== "outbox" && c !== "intake");
+const OFFICE_COLS = COLLECTIONS.filter(c => c !== "outbox" && c !== "intake" && !TRAINING_COLLECTIONS.includes(c));
 const SAFE_ID = /^[A-Za-z0-9_\-.~:@+]{1,120}$/;
 const pub = f => path.join(__dirname, "public", f);
 const wrap = fn => (req, res, next) => fn(req, res, next).catch(e => { console.error(e); res.status(500).json({ error: "Something went wrong – try again" }); });
@@ -54,7 +58,7 @@ office.use(auth.requireOffice);
 office.get("/all", wrap(async (_req, res) => {
   const out = { v: await store.version(), wa: { enabled: wa.enabled() }, diary: { enabled: diary.enabled() }, kps: { enabled: kps.enabled() }, baseUrl: baseUrl(), db: !!process.env.DATABASE_URL };
   for (const c of OFFICE_COLS) out[c] = await store.list(c);
-  out.outbox = (await store.list("outbox")).sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 30);
+  out.outbox = (await store.list("outbox")).filter(o => o.line !== "training").sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 30);
   res.json(out);
 }));
 office.get("/version", wrap(async (_req, res) => res.json({ v: await store.version() })));
@@ -194,6 +198,78 @@ app.post("/api/join", wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+/* ---------- FC Training: onsite portfolio jobs for learners ---------- */
+app.get("/training", auth.requireOffice, (_req, res) => res.sendFile(pub("training.html")));
+const tr = express.Router();
+tr.use(auth.requireOffice);
+const tres = (res, r) => res.status(r && r.error ? 409 : 200).json(r);
+tr.get("/all", wrap(async (_req, res) => {
+  const out = { v: await store.version(), wa: { enabled: waT.enabled() }, lms: { enabled: training.lmsOn() }, diary: { enabled: diary.enabled() }, baseUrl: baseUrl(),
+    labels: { appliances: training.APPLIANCES, types: training.TYPES, status: training.STATUS }, target: training.TARGET, checklists: training.CHECKLISTS,
+    sync: await store.get("settings", "training-sync") };
+  for (const c of TRAINING_COLLECTIONS) out[c] = await store.list(c);
+  out.tinbox = out.tinbox.sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 100);
+  out.outbox = (await store.list("outbox")).filter(o => o.line === "training").sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 30);
+  res.json(out);
+}));
+tr.get("/version", wrap(async (_req, res) => res.json({ v: await store.version() })));
+tr.post("/sync-learners", wrap(async (_req, res) => tres(res, await training.syncLearners())));
+tr.put("/learners/:id", wrap(async (req, res) => {
+  if (!SAFE_ID.test(req.params.id)) return res.status(400).json({ error: "Bad id" });
+  const b = req.body || {}, cur = await store.get("tlearners", req.params.id);
+  if (cur && cur.fromLms) { // LMS learners: only the active switch is kept here; edit details in the LMS
+    await store.put("tlearners", req.params.id, { ...cur, active: b.active !== false }); return res.json({ ok: true });
+  }
+  if (!String(b.name || "").trim()) return res.status(400).json({ error: "Add the learner's name" });
+  await store.put("tlearners", req.params.id, { ...(cur || {}), name: String(b.name).trim().slice(0, 100), phone: String(b.phone || "").slice(0, 30), cohort: String(b.cohort || "").slice(0, 60),
+    active: b.active !== false, token: (cur && cur.token) || training.newToken() });
+  res.json({ ok: true });
+}));
+tr.put("/supervisors/:id", wrap(async (req, res) => {
+  if (!SAFE_ID.test(req.params.id)) return res.status(400).json({ error: "Bad id" });
+  const b = req.body || {}, cur = await store.get("tsupervisors", req.params.id);
+  if (!String(b.name || "").trim() || !String(b.phone || "").trim()) return res.status(400).json({ error: "Add the supervisor's name and mobile" });
+  await store.put("tsupervisors", req.params.id, { ...(cur || {}), name: String(b.name).trim().slice(0, 100), phone: String(b.phone).slice(0, 30), gasSafe: String(b.gasSafe || "").slice(0, 20),
+    active: b.active !== false, token: (cur && cur.token) || training.newToken() });
+  res.json({ ok: true });
+}));
+tr.post("/jobs", wrap(async (req, res) => tres(res, await training.saveJob(null, req.body || {}))));
+tr.put("/jobs/:id", wrap(async (req, res) => tres(res, await training.saveJob(req.params.id, req.body || {}))));
+tr.post("/jobs/:id/post", wrap(async (req, res) => tres(res, await training.post(req.params.id))));
+tr.post("/jobs/:id/assign", wrap(async (req, res) => tres(res, await training.assign(req.params.id, String((req.body || {}).learnerId || "")))));
+tr.post("/jobs/:id/confirm", wrap(async (req, res) => tres(res, await training.confirm(req.params.id, String((req.body || {}).supervisorId || "")))));
+tr.post("/jobs/:id/reopen", wrap(async (req, res) => tres(res, await training.reopen(req.params.id))));
+tr.post("/jobs/:id/signoff", wrap(async (req, res) => tres(res, await training.signoff(req.params.id, String((req.body || {}).by || "the office").slice(0, 80)))));
+tr.post("/jobs/:id/cancel", wrap(async (req, res) => tres(res, await training.cancel(req.params.id))));
+tr.post("/jobs/:id/lms", wrap(async (req, res) => { const j = await store.get("tjobs", req.params.id); if (!j) return res.status(404).json({ error: "Job not found" }); await training.pushLms(j); res.json({ ok: true }); }));
+tr.delete("/inbox/:id", wrap(async (req, res) => { if (!SAFE_ID.test(req.params.id)) return res.status(400).json({ error: "Bad id" }); await store.del("tinbox", req.params.id); res.json({ ok: true }); }));
+app.use("/api/training", tr);
+
+// Learner / supervisor link (no login)
+app.get("/t/:token", (_req, res) => res.sendFile(pub("trainee.html")));
+const tl = express.Router({ mergeParams: true });
+tl.use(wrap(async (req, res, next) => {
+  const who = await training.personFor(req.params.token);
+  if (!who) return res.status(404).json({ error: "This link isn't active. Ask FC Training Academy for a new one.", code: "badlink" });
+  req.who = who; next();
+}));
+tl.get("/", wrap(async (req, res) => res.json(await training.boardFor(req.who))));
+tl.post("/jobs/:id/accept", wrap(async (req, res) => {
+  if (req.who.role !== "learner") return res.status(403).json({ error: "Only learners take jobs" });
+  const r = await training.accept(req.who.p, req.params.id, "app"); res.status(r.ok ? 200 : 409).json(r.ok ? { ok: true } : { error: r.error });
+}));
+tl.post("/jobs/:id/done", wrap(async (req, res) => {
+  if (req.who.role !== "learner") return res.status(403).json({ error: "Only the learner marks the job done" });
+  const r = await training.done(req.who.p, req.params.id, req.body || {}); res.status(r.ok ? 200 : 409).json(r.ok ? { ok: true } : { error: r.error });
+}));
+tl.post("/jobs/:id/signoff", wrap(async (req, res) => {
+  if (req.who.role !== "supervisor") return res.status(403).json({ error: "Only the supervisor signs off" });
+  const j = await store.get("tjobs", req.params.id);
+  if (!j || !j.supervisor || j.supervisor.id !== req.who.p.id) return res.status(403).json({ error: "You're not the supervisor on this job" });
+  const r = await training.signoff(req.params.id, req.who.p.name); res.status(r.ok ? 200 : 409).json(r.ok ? { ok: true } : { error: r.error });
+}));
+app.use("/api/t/:token", tl);
+
 app.use("/api", office);
 
 /* ---------- WhatsApp webhook ---------- */
@@ -203,21 +279,24 @@ app.get("/webhook", (req, res) => {
 });
 app.post("/webhook", (req, res) => {
   const secret = process.env.WHATSAPP_APP_SECRET;
-  if (secret) {
+  // The FC Training number may sit in a different Meta app, so either app secret is accepted.
+  const secrets = [secret, process.env.TRAINING_WHATSAPP_APP_SECRET].filter(Boolean);
+  if (secrets.length) {
     const sig = String(req.headers["x-hub-signature-256"] || "");
-    const want = "sha256=" + crypto.createHmac("sha256", secret).update(req.rawBody || "").digest("hex");
-    if (sig.length !== want.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(want))) return res.sendStatus(401);
+    const okSig = secrets.some(sec => { const want = "sha256=" + crypto.createHmac("sha256", sec).update(req.rawBody || "").digest("hex"); return sig.length === want.length && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(want)); });
+    if (!okSig) return res.sendStatus(401);
   }
   res.sendStatus(200); // answer Meta straight away, then process
   const msgs = [];
-  for (const e of (req.body && req.body.entry) || []) for (const ch of e.changes || []) for (const m of (ch.value && ch.value.messages) || []) msgs.push(m);
+  for (const e of (req.body && req.body.entry) || []) for (const ch of e.changes || []) for (const m of (ch.value && ch.value.messages) || []) msgs.push({ ...m, _pid: ch.value.metadata && ch.value.metadata.phone_number_id });
   (async () => {
     for (const m of msgs) {
       const payload = m.type === "button" ? m.button && m.button.payload : m.type === "interactive" ? m.interactive && m.interactive.button_reply && m.interactive.button_reply.id : null;
       const from = String(m.from || ""), body = m.type === "text" ? m.text && m.text.body
         : (m.type === "image" || m.type === "document" || m.type === "video") ? (m[m.type] && m[m.type].caption) || "" : "";
       try {
-        if (!(await intake.maybeHandle(from, payload, body, m.type))) await dispatch.handleIncoming(from, payload, body);
+        if (training.isTrainingNumber(m._pid)) await training.handleIncoming(from, payload, body, m.type);
+        else if (!(await intake.maybeHandle(from, payload, body, m.type))) await dispatch.handleIncoming(from, payload, body);
       } catch (err) { console.error("webhook", err); }
     }
   })();
@@ -225,5 +304,7 @@ app.post("/webhook", (req, res) => {
 
 // Check K's Plumbing Store orders that aren't dispatched yet every 10 minutes.
 setInterval(() => materials.refresh().catch(e => console.error("kps refresh", e.message)), 10 * 60 * 1000).unref();
+// Pull learners from the LMS every hour (and once at start-up) so new starters can get training jobs.
+if (training.lmsOn()) { setTimeout(() => training.syncLearners().catch(() => {}), 20000).unref(); setInterval(() => training.syncLearners().catch(e => console.error("lms sync", e.message)), 3600e3).unref(); }
 store.init().then(() => app.listen(PORT, () => console.log(`Job desk on :${PORT} (${process.env.DATABASE_URL ? "Postgres" : "local file"} store, WhatsApp ${wa.enabled() ? "live" : "simulated"}, diary sync ${diary.enabled() ? "on" : "off"})`)));
 module.exports = app;

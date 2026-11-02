@@ -75,6 +75,51 @@ Meta usually approves Utility templates within minutes to a few hours. Business-
 
 **Consent:** only message contractors, residents and agents who expect messages from you. The contractor invite asks them to reply OK. For residents, tell the agent or landlord that tenants will get WhatsApp updates about their repair.
 
+## FC Training jobs (`/training`)
+
+Onsite portfolio jobs for FC Training Academy learners, run on **FC's own WhatsApp number** (the one on fctrainingacademy.com), separate from the maintenance number. Same login as the office desk; there's a "FC Training jobs" link in the office tabs.
+
+- **Learners** come from the LMS (fc-compliance-records): name, mobile, cohort. Synced every hour and with the **Sync from LMS** button. Each learner gets a personal link (`/t/<link>`, no login).
+- **Flow:** log a job (boiler or cooker; install, service, fault find or pipework) → **Post** to a cohort → every learner in it gets a WhatsApp with **Accept job / Not for me** → the first to accept is put forward → the office **confirms a supervising Gas Safe engineer** → learner and supervisor get the address and each other's details → the learner ticks the portfolio checklist and says what they did → the supervisor signs it off from their link (or the office does).
+- Learners only see the area (e.g. IG1), date and job until the supervisor is confirmed.
+- Done and signed-off jobs are written to the learner's LMS page (**Onsite portfolio jobs**), counted against the 30-job target: boiler and cooker, 5 installs, 5 services, 4 fault finds, 1 pipework each.
+- No money on training jobs.
+- Messages to the FC number from anyone who isn't a learner or supervisor (website enquiries) get **no bot reply**. They're listed under **Messages** for the office to answer.
+- If a supervisor is also a maintenance contractor (same mobile), confirming warns you if they're already on a job that day.
+
+| Variable | What it is |
+|---|---|
+| `TRAINING_WHATSAPP_PHONE_ID` | Phone number ID of FC's number (07359 508130) in WhatsApp Manager → API Setup. |
+| `TRAINING_WHATSAPP_TOKEN` | Optional. Only if FC's number is in a different Meta business from the maintenance number; otherwise `WHATSAPP_TOKEN` is used. |
+| `TRAINING_WHATSAPP_APP_SECRET` | Optional. App secret of the Meta app FC's number is in, if it's a different app. |
+| `LMS_URL` | `https://fc-compliance-records.onrender.com` |
+| `LMS_KEY` | Same value as `JOBDESK_KEY` on the LMS. |
+
+Webhook: if FC's number is in the same Meta app as the maintenance number, nothing to do (messages are told apart by phone number ID). If it's in another app, set that app's callback URL to `https://<this app>/webhook` with the same verify token and subscribe to `messages`.
+
+Two **Utility** templates (English UK) on FC's WhatsApp account:
+
+**`training_job_alert`**, with two **Quick reply** buttons: `Accept job` and `Not for me`
+```
+New training job {{1}} – {{2}}
+Area: {{3}}
+When: {{4}}
+{{5}}
+The first learner to accept is put forward and we'll confirm your supervisor.
+Your job board: {{6}}
+```
+
+**`training_job_confirmed`**
+```
+Training job {{1}} ({{2}}) is confirmed.
+Address: {{3}}
+When: {{4}}
+{{5}}
+Job page and portfolio checklist: {{6}}
+```
+
+`node test/training.js` checks the whole flow (it starts its own server and a fake LMS).
+
 ## Running locally
 
 ```

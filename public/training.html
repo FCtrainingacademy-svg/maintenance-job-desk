@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>FC Training jobs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&family=Public+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="/static/app.css">
+<style>
+.tj-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+.tj-list{list-style:none;margin:0;padding:0}
+.tj-list li{border-bottom:1px solid var(--line);padding:10px 14px;cursor:pointer;display:grid;gap:2px}
+.tj-list li[aria-selected="true"]{background:var(--accent-soft)}
+.tj-list li:hover{background:var(--sunk)}
+.tj-st{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:1px 8px;border-radius:999px;background:var(--grey-soft);justify-self:start}
+.tj-st.open{background:var(--urgent-soft);color:var(--urgent)}.tj-st.accepted{background:var(--emerg-soft);color:var(--emerg)}
+.tj-st.confirmed{background:var(--accent-soft);color:var(--accent)}.tj-st.done{background:var(--urgent-soft);color:var(--urgent)}.tj-st.signedoff{background:var(--ok-soft);color:var(--ok)}
+.kv{display:grid;grid-template-columns:150px minmax(0,1fr);gap:4px 12px;margin:0}.kv dt{color:var(--muted)}.kv dd{margin:0}
+table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}th{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+label.f{display:grid;gap:3px;font-size:13px;font-weight:600}
+.warn{background:var(--emerg-soft);border:1px solid var(--emerg);padding:8px 12px;border-radius:var(--r)}
+.muted{color:var(--muted)}
+</style>
+</head><body>
+<div class="wrap">
+  <header class="bar">
+    <div class="brand"><h1>FC Training jobs</h1><span>Onsite portfolio jobs for learners · FC Training Academy WhatsApp line</span></div>
+    <nav class="tabs" role="tablist" id="tabs"></nav>
+  </header>
+  <div id="banner"></div>
+  <main id="main"><div class="empty">Loading…</div></main>
+</div>
+<div id="toast" class="toast" hidden></div>
+<script>
+(function(){
+"use strict";
+const S={d:null,tab:"jobs",sel:null,filter:"live",edit:null,v:null,clash:null};
+const $=s=>document.querySelector(s);
+const esc=v=>String(v==null?"":v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmtDT=iso=>{if(!iso)return"To be arranged";const d=new Date(iso);return isNaN(d)?esc(iso):d.toLocaleString("en-GB",{weekday:"short",day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})};
+function toast(m){const t=$("#toast");t.textContent=m;t.hidden=false;clearTimeout(toast._t);toast._t=setTimeout(()=>t.hidden=true,3200)}
+async function api(method,path,body){
+  const r=await fetch("/api/training"+path,{method,headers:body?{"Content-Type":"application/json"}:{},body:body?JSON.stringify(body):undefined});
+  if(r.status===401){location.href="/login";throw new Error("login")}
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok||j.error)throw new Error(j.error||"Something went wrong – try again");
+  return j;
+}
+async function load(){S.d=await api("GET","/all");S.v=S.d.v;render()}
+setInterval(async()=>{try{if(document.hidden||S.edit)return;const r=await api("GET","/version");if(r.v!==S.v)await load()}catch(e){}},15000);
+
+const L=()=>S.d.labels,kind=j=>`${L().appliances[j.appliance]||""} ${(L().types[j.type]||"").toLowerCase()}`.trim();
+const learners=()=>S.d.tlearners.slice().sort((a,b)=>String(a.name).localeCompare(String(b.name)));
+const sups=()=>S.d.tsupervisors.slice().sort((a,b)=>String(a.name).localeCompare(String(b.name)));
+const cohorts=()=>[...new Set(S.d.tlearners.filter(l=>l.active!==false&&l.cohort).map(l=>l.cohort))].sort();
+const LIVE=["draft","open","accepted","confirmed","done"];
+
+function render(){
+  const tabs=[["jobs","Jobs"],["learners","Learners"],["supervisors","Supervisors"],["messages","Messages"+(S.d.tinbox.length?` (${S.d.tinbox.length})`:"")]];
+  $("#tabs").innerHTML=tabs.map(([k,l])=>`<button class="tab" role="tab" data-tab="${k}" aria-selected="${S.tab===k}">${l}</button>`).join("")+`<a class="tab" href="/" style="text-decoration:none">Maintenance desk</a>`;
+  const b=[];
+  if(!S.d.wa.enabled)b.push("The FC Training WhatsApp number isn't connected yet (TRAINING_WHATSAPP_PHONE_ID). Messages are listed under Messages as \"not sent\".");
+  if(!S.d.lms.enabled)b.push("The LMS link isn't set up (LMS_URL, LMS_KEY), so learners can't be synced and finished jobs aren't written to the LMS. You can add learners by hand meanwhile.");
+  $("#banner").innerHTML=b.map(x=>`<div class="banner">${esc(x)}</div>`).join("");
+  $("#main").innerHTML=S.tab==="jobs"?vJobs():S.tab==="learners"?vLearners():S.tab==="supervisors"?vSups():vMessages();
+}
+
+/* ---------- jobs ---------- */
+function vJobs(){
+  const all=S.d.tjobs.slice().sort((a,b)=>String(b.ref).localeCompare(String(a.ref)));
+  const need=all.filter(j=>j.status==="accepted").length,signoff=all.filter(j=>j.status==="done").length;
+  const list=all.filter(j=>S.filter==="all"||(S.filter==="live"?LIVE.includes(j.status):j.status===S.filter));
+  const sel=S.sel&&S.d.tjobs.find(j=>j.id===S.sel);
+  const chip=(k,l)=>`<button class="chip" data-filter="${k}" aria-pressed="${S.filter===k}">${l}</button>`;
+  return `<div class="split ${sel||S.edit?"has-sel":""}"><div class="rail"><div class="rail-head">
+    <button class="btn primary" data-act="new">+ New training job</button>
+    <div class="chips">${chip("live","Live")}${chip("accepted",`Confirm supervisor${need?" ("+need+")":""}`)}${chip("done",`To sign off${signoff?" ("+signoff+")":""}`)}${chip("signedoff","Signed off")}${chip("all","All")}</div></div>
+    <ul class="tj-list">${list.length?list.map(j=>`<li data-sel="${j.id}" aria-selected="${S.sel===j.id}"><div class="row" style="justify-content:space-between"><b class="mono">${esc(j.ref)}</b><span class="tj-st ${j.status}">${esc(L().status[j.status]||j.status)}</span></div>
+      <div>${esc(kind(j))} · ${esc(j.postcode)}</div><div class="muted" style="font-size:12px">${fmtDT(j.date)}${j.learner?" · "+esc(j.learner.name):""}${j.supervisor?" · sup. "+esc(j.supervisor.name):""}</div></li>`).join(""):`<li class="empty" style="cursor:default">No jobs here.</li>`}</ul></div>
+    <div class="sheetcol">${S.edit?vForm(S.edit==="new"?null:S.d.tjobs.find(j=>j.id===S.edit)):sel?vJob(sel):`<div class="panel"><div class="empty">Choose a job, or log a new one.<br><br>Learner progress against the 30-job portfolio is on the <b>Learners</b> tab.</div></div>`}</div></div>`;
+}
+function vForm(j){
+  j=j||{appliance:"boiler",type:"service",customer:{}};const c=j.customer||{};
+  const opt=(o,v)=>Object.entries(o).map(([k,l])=>`<option value="${k}" ${v===k?"selected":""}>${esc(l)}</option>`).join("");
+  return `<form class="panel" data-submit="job"><div class="panel-h"><button type="button" class="btn small back" data-act="cancel-edit">← Back</button><h2>${j.ref?"Edit "+esc(j.ref):"New training job"}</h2></div><div class="panel-b">
+  <div class="tj-grid"><label class="f">Appliance<select name="appliance">${opt(L().appliances,j.appliance)}</select></label>
+  <label class="f">Job type<select name="type">${opt(L().types,j.type)}</select></label>
+  <label class="f">Date and time<input type="datetime-local" name="date" value="${esc(j.date||"")}"></label>
+  <label class="f">Post to cohort<select name="cohort"><option value="">All active learners</option>${cohorts().map(x=>`<option ${j.cohort===x?"selected":""}>${esc(x)}</option>`).join("")}</select></label></div>
+  <label class="f">What's the job<textarea name="description" rows="2" placeholder="e.g. Annual service, Worcester Greenstar 30i combi">${esc(j.description||"")}</textarea></label>
+  <div class="tj-grid"><label class="f" style="grid-column:span 2">Address<input name="address" value="${esc(j.address||"")}" autocomplete="off"></label><label class="f">Postcode<input name="postcode" value="${esc(j.postcode||"")}" required></label></div>
+  <div class="tj-grid"><label class="f">Customer name<input name="cname" value="${esc(c.name||"")}"></label><label class="f">Customer phone<input name="cphone" value="${esc(c.phone||"")}"></label></div>
+  <label class="f">Access / notes for the learner and supervisor<textarea name="access" rows="2">${esc(j.access||"")}</textarea></label>
+  <p class="muted" style="margin:0;font-size:13px">Learners only see the area (e.g. IG1), date and job until it's confirmed. The address and customer details go to the learner and supervisor once the supervisor is confirmed. Ask the customer's permission for a supervised learner to attend.</p>
+  <div class="row"><button class="btn primary">${j.ref?"Save changes":"Save job"}</button></div></div></form>`;
+}
+function vJob(j){
+  const st=j.status,list=S.d.checklists[j.appliance][j.type]||[],ck=j.checklist||{};
+  const actions=[];
+  if(st==="draft"||st==="open")actions.push(`<button class="btn go" data-act="post">${st==="draft"?"Post to learners on WhatsApp":"Send the alert again"}</button>`);
+  if(["draft","open","accepted","confirmed"].includes(st))actions.push(`<button class="btn" data-act="edit">Edit</button>`);
+  if(["accepted","confirmed"].includes(st))actions.push(`<button class="btn" data-act="reopen">Take learner off & re-post</button>`);
+  if(st==="done")actions.push(`<button class="btn go" data-act="signoff">Sign off (office)</button>`);
+  if(["done","signedoff"].includes(st)&&S.d.lms.enabled)actions.push(`<button class="btn" data-act="lms">Send to LMS again</button>`);
+  if(!["signedoff","cancelled"].includes(st))actions.push(`<button class="btn danger" data-act="cancel">Cancel job</button>`);
+  const supPick=["accepted","confirmed"].includes(st)?`<div class="callout" style="display:grid;gap:8px"><b>${st==="accepted"?"Confirm the supervising Gas Safe engineer":"Change supervisor"}</b>
+    ${sups().filter(x=>x.active!==false).length?`<div class="row"><select id="supsel" style="max-width:320px"><option value="">Choose supervisor…</option>${sups().filter(x=>x.active!==false).map(x=>`<option value="${x.id}" ${j.supervisor&&j.supervisor.id===x.id?"selected":""}>${esc(x.name)}${x.gasSafe?" ("+esc(x.gasSafe)+")":""}</option>`).join("")}</select><button class="btn primary" data-act="confirm">Confirm & send details</button></div>`:`<span>Add supervisors on the <b>Supervisors</b> tab first.</span>`}
+    ${S.clash&&S.clash.id===j.id&&S.clash.list.length?`<div class="warn">Heads up: this supervisor also has ${S.clash.list.map(esc).join("; ")}.</div>`:""}</div>`:"";
+  const learnerPick=!["done","signedoff","cancelled"].includes(st)?`<details><summary style="cursor:pointer;font-weight:600">Put a learner on it yourself</summary><div class="row" style="margin-top:8px"><select id="lsel" style="max-width:320px"><option value="">Choose learner…</option>${learners().filter(l=>l.active!==false).map(l=>`<option value="${l.id}">${esc(l.name)}${l.cohort?" · "+esc(l.cohort):""}</option>`).join("")}</select><button class="btn" data-act="assign">Put on job</button></div></details>`:"";
+  return `<div class="panel"><div class="panel-h"><button class="btn small back" data-act="unsel">←</button><h2 class="mono">${esc(j.ref)}</h2><span class="tj-st ${st}">${esc(L().status[st]||st)}</span></div><div class="panel-b">
+  <dl class="kv"><dt>Job</dt><dd><b>${esc(kind(j))}</b>${j.description?" – "+esc(j.description):""}</dd><dt>When</dt><dd>${fmtDT(j.date)}</dd><dt>Address</dt><dd>${esc([j.address,j.postcode].filter(Boolean).join(", "))}</dd>
+  <dt>Customer</dt><dd>${esc((j.customer||{}).name||"—")} ${esc((j.customer||{}).phone||"")}</dd><dt>Posted to</dt><dd>${j.recipients?j.recipients.length+" learner"+(j.recipients.length===1?"":"s")+(j.cohort?" (cohort "+esc(j.cohort)+")":""):"Not posted yet"}</dd>
+  <dt>Learner</dt><dd>${j.learner?esc(j.learner.name)+" "+esc(j.learner.phone||"")+(j.learner.via?` <span class="muted">(${j.learner.via==="office"?"put on by office":"accepted"+(j.learner.via==="whatsapp"?" on WhatsApp":" on link")})</span>`:""):"—"}</dd>
+  <dt>Supervisor</dt><dd>${j.supervisor?esc(j.supervisor.name)+" "+esc(j.supervisor.phone||"")+(j.supervisor.gasSafe?" · Gas Safe "+esc(j.supervisor.gasSafe):""):"—"}</dd>
+  ${j.signedOffBy?`<dt>Signed off</dt><dd>${esc(j.signedOffBy)} · ${fmtDT(j.signedOffAt)}</dd>`:""}${j.lms?`<dt>LMS</dt><dd>${j.lms.ok?"Recorded on the learner's LMS page":"Not recorded: "+esc(j.lms.error)}</dd>`:""}</dl>
+  ${j.clash?`<div class="warn">${esc(j.clash)}</div>`:""}
+  <div class="row">${actions.join("")}</div>${supPick}${learnerPick}
+  ${["done","signedoff"].includes(st)?`<div><h3 style="font-size:16px;margin-bottom:6px">What the learner did</h3><p style="white-space:pre-wrap;margin:0">${esc(j.findings||"")}</p></div>`:""}
+  <div><h3 style="font-size:16px;margin-bottom:6px">Portfolio checklist (${esc(kind(j))})</h3><ul style="margin:0;padding-left:18px">${list.map(i=>`<li>${["done","signedoff"].includes(st)?(ck[i]?"✅ ":"⬜ "):""}${esc(i)}</li>`).join("")}</ul></div>
+  <details><summary style="cursor:pointer;font-weight:600">History</summary><ul style="margin:6px 0 0;padding-left:18px">${(j.log||[]).slice().reverse().map(e=>`<li><span class="mono muted">${fmtDT(e.at)}</span> ${esc(e.text)}</li>`).join("")}</ul></details>
+  </div></div>`;
+}
+
+/* ---------- learners ---------- */
+function prog(lid){const jobs=S.d.tjobs.filter(j=>j.learner&&j.learner.id===lid&&["done","signedoff"].includes(j.status));const g={};for(const a of Object.keys(L().appliances))for(const t of Object.keys(L().types))g[a+t]=jobs.filter(j=>j.appliance===a&&j.type===t).length;return {n:jobs.length,g}}
+function vLearners(){
+  const ls=learners(),sync=S.d.sync,types=Object.keys(L().types);
+  return `<div class="panel"><div class="panel-h"><h2>Learners</h2>${S.d.lms.enabled?`<button class="btn primary" data-act="sync">Sync from LMS</button>`:""}<span class="muted">${sync?`Last sync ${fmtDT(sync.at)} · ${sync.count} active in the LMS`:""}</span></div><div class="panel-b">
+  <p class="muted" style="margin:0">Learners come from the LMS (name, phone, cohort). Edit their details there. Each learner gets their own job link. Progress counts jobs done on this desk against the 30-job portfolio (boiler and cooker: ${types.map(t=>S.d.target[t]+" "+L().types[t].toLowerCase()).join(", ")}).</p>
+  <div class="tablewrap" style="overflow:auto"><table><thead><tr><th>Learner</th><th>Cohort</th><th>Phone</th><th>Done</th>${["boiler","cooker"].map(a=>types.map(t=>`<th title="${L().appliances[a]} ${L().types[t]}">${a[0].toUpperCase()}-${L().types[t].split(" ")[0]}</th>`).join("")).join("")}<th>Link</th><th>On</th></tr></thead><tbody>
+  ${ls.length?ls.map(l=>{const p=prog(l.id);return `<tr class="${l.active===false?"muted":""}"><td>${esc(l.name)}</td><td>${esc(l.cohort||"—")}</td><td class="mono">${esc(l.phone||"")||'<span style="color:var(--emerg)">no phone</span>'}</td><td class="mono"><b>${p.n}</b>/30</td>
+    ${["boiler","cooker"].map(a=>types.map(t=>{const n=p.g[a+t],tg=S.d.target[t];return `<td class="mono" style="color:${n>=tg?"var(--ok)":n?"var(--urgent)":"inherit"}">${n}/${tg}</td>`}).join("")).join("")}
+    <td>${l.token?`<button class="btn small" data-copy="${esc(S.d.baseUrl+"/t/"+l.token)}">Copy link</button>`:""}</td><td><input type="checkbox" data-lactive="${l.id}" ${l.active!==false?"checked":""} aria-label="Active"></td></tr>`}).join(""):`<tr><td colspan="14" class="empty">No learners yet.${S.d.lms.enabled?" Press Sync from LMS.":""}</td></tr>`}</tbody></table></div>
+  <form class="row" data-submit="learner" style="border-top:1px solid var(--line);padding-top:12px"><b style="width:100%">Add a learner by hand${S.d.lms.enabled?" (only if they're not in the LMS)":""}</b><input name="name" placeholder="Name" style="max-width:220px" required><input name="phone" placeholder="Mobile" style="max-width:160px" required><input name="cohort" placeholder="Cohort" style="max-width:120px"><button class="btn">Add learner</button></form>
+  </div></div>`;
+}
+/* ---------- supervisors ---------- */
+function vSups(){
+  const ss=sups();
+  return `<div class="panel"><div class="panel-h"><h2>Supervising engineers</h2></div><div class="panel-b">
+  <p class="muted" style="margin:0">Gas Safe registered engineers who supervise learners on site. They get the job details, the learner's details and a link to sign the job off. If a supervisor is also a contractor on the maintenance desk (same mobile), you're warned when they're already booked that day.</p>
+  <table><thead><tr><th>Name</th><th>Mobile</th><th>Gas Safe no.</th><th>Jobs</th><th>Link</th><th>On</th></tr></thead><tbody>
+  ${ss.length?ss.map(x=>`<tr class="${x.active===false?"muted":""}"><td>${esc(x.name)}</td><td class="mono">${esc(x.phone)}</td><td class="mono">${esc(x.gasSafe||"—")}</td><td class="mono">${S.d.tjobs.filter(j=>j.supervisor&&j.supervisor.id===x.id&&j.status!=="cancelled").length}</td>
+    <td><button class="btn small" data-copy="${esc(S.d.baseUrl+"/t/"+x.token)}">Copy link</button></td><td><input type="checkbox" data-sactive="${x.id}" ${x.active!==false?"checked":""} aria-label="Active"></td></tr>`).join(""):`<tr><td colspan="6" class="empty">No supervisors yet.</td></tr>`}</tbody></table>
+  <form class="row" data-submit="sup" style="border-top:1px solid var(--line);padding-top:12px"><b style="width:100%">Add a supervisor</b><input name="name" placeholder="Name" style="max-width:220px" required><input name="phone" placeholder="Mobile" style="max-width:160px" required><input name="gasSafe" placeholder="Gas Safe no." style="max-width:140px"><button class="btn">Add supervisor</button></form>
+  </div></div>`;
+}
+/* ---------- messages ---------- */
+function vMessages(){
+  return `<div class="two" style="display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))"><div class="panel"><div class="panel-h"><h2>Other messages to the FC number</h2></div><div class="panel-b">
+  <p class="muted" style="margin:0">Messages from people who aren't learners or supervisors (e.g. website enquiries). The bot doesn't reply to these, so answer them yourself.</p>
+  ${S.d.tinbox.length?S.d.tinbox.map(m=>`<div style="border-bottom:1px solid var(--line);padding-bottom:8px"><div class="row" style="justify-content:space-between"><span><a class="mono" href="https://wa.me/${esc(m.from)}" target="_blank" rel="noopener">+${esc(m.from)}</a> <span class="muted">${fmtDT(m.at)}</span></span><button class="btn small" data-inbox="${esc(m.id)}">Done</button></div><div style="white-space:pre-wrap">${esc(m.text)}</div></div>`).join(""):`<div class="empty">Nothing waiting.</div>`}</div></div>
+  <div class="panel"><div class="panel-h"><h2>Sent from the FC number</h2></div><div class="panel-b">
+  ${S.d.outbox.length?S.d.outbox.map(o=>`<div style="font-size:13px;border-bottom:1px solid var(--line);padding-bottom:6px"><span class="muted mono">${fmtDT(o.at)}</span> · ${o.simulated?"<b>not sent</b> (number not connected)":o.error?`<b style="color:var(--emerg)">failed</b>: ${esc(o.error)}`:"sent"}<br>${esc(o.summary)}</div>`).join(""):`<div class="empty">Nothing sent yet.</div>`}</div></div></div>`;
+}
+
+/* ---------- events ---------- */
+document.addEventListener("click",async e=>{
+  const t=e.target.closest("[data-tab],[data-sel],[data-filter],[data-act],[data-copy],[data-inbox]");if(!t)return;
+  try{
+    if(t.dataset.tab){S.tab=t.dataset.tab;S.edit=null;render();return}
+    if(t.dataset.sel){S.sel=t.dataset.sel;S.edit=null;render();return}
+    if(t.dataset.filter){S.filter=t.dataset.filter;render();return}
+    if(t.dataset.copy){try{await navigator.clipboard.writeText(t.dataset.copy);toast("Link copied")}catch(_){prompt("Copy this link",t.dataset.copy)}return}
+    if(t.dataset.inbox){await api("DELETE","/inbox/"+encodeURIComponent(t.dataset.inbox));await load();return}
+    const a=t.dataset.act,id=S.sel;
+    if(a==="new"){S.edit="new";render();return}
+    if(a==="edit"){S.edit=id;render();return}
+    if(a==="cancel-edit"){S.edit=null;render();return}
+    if(a==="unsel"){S.sel=null;render();return}
+    if(a==="sync"){t.disabled=true;const r=await api("POST","/sync-learners");toast(`Synced: ${r.count} learners (${r.added} new, ${r.off} switched off)`);await load();return}
+    t.disabled=true;
+    if(a==="post"){const r=await api("POST",`/jobs/${id}/post`);toast(`Sent to ${r.results.length} learner${r.results.length===1?"":"s"}${r.simulated?" (not really sent – number not connected)":""}`)}
+    if(a==="confirm"){const sid=$("#supsel").value;if(!sid){toast("Choose a supervisor");t.disabled=false;return}const r=await api("POST",`/jobs/${id}/confirm`,{supervisorId:sid});S.clash={id,list:r.clashes||[]};toast("Confirmed – learner and supervisor sent the details"+(r.simulated?" (not really sent)":""))}
+    if(a==="assign"){const lid=$("#lsel").value;if(!lid){toast("Choose a learner");t.disabled=false;return}await api("POST",`/jobs/${id}/assign`,{learnerId:lid});toast("Learner put on the job")}
+    if(a==="reopen"){if(!confirm("Take the learner off and send the job to the cohort again?")){t.disabled=false;return}const r=await api("POST",`/jobs/${id}/reopen`);toast(`Re-posted to ${r.realerted} learners`)}
+    if(a==="signoff"){const by=prompt("Signed off by (name)","");if(by===null){t.disabled=false;return}await api("POST",`/jobs/${id}/signoff`,{by:by.trim()||"the office"});toast("Signed off – added to the learner's record")}
+    if(a==="lms"){await api("POST",`/jobs/${id}/lms`);toast("Sent to the LMS")}
+    if(a==="cancel"){if(!confirm("Cancel this training job?")){t.disabled=false;return}await api("POST",`/jobs/${id}/cancel`);toast("Cancelled")}
+    await load();
+  }catch(err){toast(err.message);t.disabled=false}
+});
+document.addEventListener("change",async e=>{
+  const t=e.target;
+  try{
+    if(t.dataset.lactive){const l=S.d.tlearners.find(x=>x.id===t.dataset.lactive);await api("PUT","/learners/"+encodeURIComponent(l.id),{...l,active:t.checked});await load()}
+    if(t.dataset.sactive){const x=S.d.tsupervisors.find(y=>y.id===t.dataset.sactive);await api("PUT","/supervisors/"+encodeURIComponent(x.id),{...x,active:t.checked});await load()}
+  }catch(err){toast(err.message)}
+});
+const rid=p=>p+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+document.addEventListener("submit",async e=>{
+  const f=e.target,k=f.dataset.submit;if(!k)return;e.preventDefault();
+  const v=Object.fromEntries(new FormData(f).entries());
+  try{
+    if(k==="job"){const body={appliance:v.appliance,type:v.type,date:v.date,cohort:v.cohort,description:v.description,address:v.address,postcode:v.postcode,access:v.access,customer:{name:v.cname,phone:v.cphone}};
+      const r=S.edit==="new"?await api("POST","/jobs",body):await api("PUT","/jobs/"+S.edit,body);S.sel=r.id;S.edit=null;toast(r.ref?`${r.ref} saved – now post it to learners`:"Saved")}
+    if(k==="learner"){await api("PUT","/learners/"+rid("m-"),v);toast("Learner added")}
+    if(k==="sup"){await api("PUT","/supervisors/"+rid("s-"),v);toast("Supervisor added")}
+    await load();
+  }catch(err){toast(err.message)}
+});
+const q=new URLSearchParams(location.search).get("job");if(q)S.sel=q;
+load().catch(e=>{$("#main").innerHTML=`<div class="empty">${esc(e.message)}</div>`});
+})();
+</script>
+</body></html>

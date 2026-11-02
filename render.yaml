@@ -28,6 +28,12 @@ services:
         value: https://ksplumbingstore.co.uk/api/bot/diary-sync
       - key: DIARY_SYNC_KEY
         sync: false
+      - key: TRAINING_WHATSAPP_PHONE_ID
+        sync: false
+      - key: LMS_URL
+        value: https://fc-compliance-records.onrender.com
+      - key: LMS_KEY
+        sync: false
 
 databases:
   - name: maintenance-job-desk-db
